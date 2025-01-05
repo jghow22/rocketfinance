@@ -1,3 +1,4 @@
+import os
 import pandas as pd
 import numpy as np
 import yfinance as yf
@@ -7,10 +8,16 @@ from keras.layers import Dense, LSTM, Input
 from statsmodels.tsa.arima.model import ARIMA
 import matplotlib.pyplot as plt
 import requests
-import os
+from flask import Flask, jsonify, request
+
+# Disable GPU usage to prevent TensorFlow errors
+os.environ["CUDA_VISIBLE_DEVICES"] = "-1"
 
 # Apply a dark theme to Matplotlib
 plt.style.use('dark_background')
+
+# Flask application setup
+app = Flask(__name__)
 
 # Fetch News Articles
 def fetch_news(symbol):
@@ -90,26 +97,27 @@ def generate_chart(symbol, is_crypto=False):
         print(f"Error generating chart for {symbol}: {e}")
         return None
 
-# Example Function to Process Request
+# Process Request
 def process_request(symbol, is_crypto=False):
-    # Generate chart
     chart_path = generate_chart(symbol, is_crypto)
-    
-    # Fetch news
     news = fetch_news(symbol)
-    
     return {
         "chart_path": chart_path,
         "news": news
     }
 
-# Example Usage
-if __name__ == "__main__":
-    symbol = "AAPL"  # Replace with the desired stock or crypto symbol
+# Flask Routes
+@app.route("/")
+def home():
+    return "Rocket Finance Backend is Running!"
+
+@app.route("/process", methods=["GET"])
+def process():
+    symbol = request.args.get("symbol", "AAPL")
     result = process_request(symbol, is_crypto=False)
-    if result["chart_path"]:
-        print(f"Chart saved at {result['chart_path']}")
-    if result["news"]:
-        print("Latest news:")
-        for article in result["news"]:
-            print(f"Title: {article.get('title')}, Source: {article.get('source', {}).get('name')}")
+    return jsonify(result)
+
+# Run Flask App
+if __name__ == "__main__":
+    port = int(os.environ.get("PORT", 8080))
+    app.run(host="0.0.0.0", port=port)
