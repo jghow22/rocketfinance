@@ -9,6 +9,7 @@ from statsmodels.tsa.arima.model import ARIMA
 import matplotlib.pyplot as plt
 import requests
 from flask import Flask, jsonify, request
+from flask_cors import CORS
 
 # Disable GPU usage to prevent TensorFlow errors
 os.environ["CUDA_VISIBLE_DEVICES"] = "-1"
@@ -18,6 +19,7 @@ plt.style.use('dark_background')
 
 # Flask application setup
 app = Flask(__name__)
+CORS(app)  # Enable CORS for cross-origin requests
 
 # Fetch News Articles
 def fetch_news(symbol):
@@ -38,7 +40,7 @@ def arima_prediction(data):
         data.index.freq = data.index.inferred_freq
         model = ARIMA(data['Close'], order=(5, 1, 0))
         model_fit = model.fit()
-        return model_fit.forecast(steps=5)
+        return model_fit.forecast(steps=5).tolist()
     except Exception as e:
         print(f"ARIMA error: {e}")
         return []
@@ -59,7 +61,7 @@ def lstm_prediction(data):
         model.fit(scaled_data, scaled_data, epochs=1, batch_size=1, verbose=0)
         
         prediction = model.predict(scaled_data[-1].reshape(1, 1, 1))
-        return scaler.inverse_transform(prediction)
+        return scaler.inverse_transform(prediction).flatten().tolist()
     except Exception as e:
         print(f"LSTM error: {e}")
         return []
@@ -67,7 +69,6 @@ def lstm_prediction(data):
 # Generate and Save Chart
 def generate_chart(symbol, is_crypto=False):
     try:
-        # Fetch data
         data = yf.download(f"{symbol}-USD" if is_crypto else symbol, period="1y", interval="1d")
         if data.empty:
             print(f"No data found for {symbol}.")
@@ -79,9 +80,9 @@ def generate_chart(symbol, is_crypto=False):
         # Create chart
         fig, ax = plt.subplots(figsize=(10, 6))
         ax.plot(data.index, data['Close'], label='Close Price', color='blue')
-        if arima_pred is not None and len(arima_pred) > 0:
+        if arima_pred:
             ax.plot(pd.date_range(start=data.index[-1], periods=5), arima_pred, label='ARIMA Forecast', color='cyan')
-        if lstm_pred is not None and len(lstm_pred) > 0:
+        if lstm_pred:
             ax.scatter(pd.date_range(start=data.index[-1], periods=1), lstm_pred, label='LSTM Prediction', color='red')
         ax.set_title(f"{symbol.upper()} {'Crypto' if is_crypto else 'Stock'} Chart")
         ax.set_xlabel("Date")
