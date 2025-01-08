@@ -11,7 +11,8 @@ import requests
 from flask import Flask, jsonify, request
 from flask_cors import CORS
 
-# Disable GPU usage to prevent TensorFlow errors
+# Suppress TensorFlow logs and force CPU usage
+os.environ["TF_CPP_MIN_LOG_LEVEL"] = "3"
 os.environ["CUDA_VISIBLE_DEVICES"] = "-1"
 
 # Apply a dark theme to Matplotlib
@@ -37,7 +38,7 @@ def fetch_news(symbol):
 # ARIMA Prediction
 def arima_prediction(data):
     try:
-        data.index.freq = data.index.inferred_freq
+        data = data.asfreq('D')  # Ensure daily frequency for the date index
         model = ARIMA(data['Close'], order=(5, 1, 0))
         model_fit = model.fit()
         return model_fit.forecast(steps=5).tolist()
@@ -118,7 +119,7 @@ def process():
     result = process_request(symbol, is_crypto=False)
     return jsonify(result)
 
-# Run Flask App
+# Main Entry Point
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8080))
     app.run(host="0.0.0.0", port=port)
