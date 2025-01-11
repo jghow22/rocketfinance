@@ -17,6 +17,8 @@ def create_lstm_model():
 
 def create_arima_model(data):
     """Recreate and fit the ARIMA model."""
+    # Ensure the data has a daily frequency
+    data = data.asfreq("D")
     model = ARIMA(data['Close'], order=(5, 1, 0))  # Adjust order as needed
     model_fit = model.fit()
     print("ARIMA model recreated and trained successfully.")
