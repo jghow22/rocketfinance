@@ -1,22 +1,36 @@
-import os
-from keras.models import load_model
+import base64
+import io
+from keras.models import model_from_json
+from statsmodels.tsa.arima.model import ARIMA
 import joblib
 from sklearn.preprocessing import StandardScaler
 
-LSTM_MODEL_PATH = "models/lstm_model.h5"  # Adjust if necessary
-ARIMA_MODEL_PATH = "models/arima_model.pkl"
+# Base64-encoded LSTM model JSON and weights
+LSTM_MODEL_JSON = """<YOUR_BASE64_ENCODED_MODEL_JSON>"""
+LSTM_MODEL_WEIGHTS = """<YOUR_BASE64_ENCODED_MODEL_WEIGHTS>"""
+
+# Base64-encoded ARIMA model
+ARIMA_MODEL = """<YOUR_BASE64_ENCODED_ARIMA_MODEL>"""
 
 def load_lstm_model():
-    """Load the pre-trained LSTM model."""
-    if not os.path.exists(LSTM_MODEL_PATH):
-        raise FileNotFoundError(f"LSTM model not found at {LSTM_MODEL_PATH}")
-    return load_model(LSTM_MODEL_PATH)
+    """Load the LSTM model from embedded JSON and weights."""
+    # Decode the JSON
+    model_json = base64.b64decode(LSTM_MODEL_JSON).decode("utf-8")
+    model = model_from_json(model_json)
+
+    # Decode and load weights
+    weights = base64.b64decode(LSTM_MODEL_WEIGHTS)
+    with io.BytesIO(weights) as f:
+        model.load_weights(f)
+
+    return model
 
 def load_arima_model():
-    """Load the pre-trained ARIMA model."""
-    if not os.path.exists(ARIMA_MODEL_PATH):
-        raise FileNotFoundError(f"ARIMA model not found at {ARIMA_MODEL_PATH}")
-    return joblib.load(ARIMA_MODEL_PATH)
+    """Load the ARIMA model from embedded base64."""
+    # Decode the model
+    model_data = base64.b64decode(ARIMA_MODEL)
+    with io.BytesIO(model_data) as f:
+        return joblib.load(f)
 
 def lstm_prediction(model, data):
     """Make predictions using the LSTM model."""
