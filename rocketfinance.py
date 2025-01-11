@@ -3,9 +3,9 @@ import pandas as pd
 import numpy as np
 import yfinance as yf
 from sklearn.preprocessing import StandardScaler
-from keras.models import Sequential
-from keras.layers import Dense, LSTM, Input
+from keras.models import load_model
 from statsmodels.tsa.arima.model import ARIMA
+import joblib
 import matplotlib.pyplot as plt
 import requests
 from flask import Flask, jsonify, request
@@ -22,6 +22,22 @@ plt.style.use('dark_background')
 app = Flask(__name__)
 CORS(app)  # Enable CORS for cross-origin requests
 
+# Load pre-trained models
+LSTM_MODEL_PATH = "lstm_model.h5"
+ARIMA_MODEL_PATH = "arima_model.pkl"
+
+try:
+    lstm_model = load_model(LSTM_MODEL_PATH)
+    print(f"LSTM model loaded from {LSTM_MODEL_PATH}")
+except Exception as e:
+    print(f"Error loading LSTM model: {e}")
+
+try:
+    arima_model = joblib.load(ARIMA_MODEL_PATH)
+    print(f"ARIMA model loaded from {ARIMA_MODEL_PATH}")
+except Exception as e:
+    print(f"Error loading ARIMA model: {e}")
+
 # Fetch News Articles
 def fetch_news(symbol):
     try:
@@ -35,33 +51,23 @@ def fetch_news(symbol):
         print(f"Error fetching news: {e}")
         return []
 
-# ARIMA Prediction
-def arima_prediction(data):
+# ARIMA Prediction using the pre-trained model
+def arima_prediction():
     try:
-        data = data.asfreq('D')  # Ensure daily frequency for the date index
-        model = ARIMA(data['Close'], order=(5, 1, 0))
-        model_fit = model.fit()
-        return model_fit.forecast(steps=5).tolist()
+        # Forecast using the loaded ARIMA model
+        return arima_model.forecast(steps=5).tolist()
     except Exception as e:
         print(f"ARIMA error: {e}")
         return []
 
-# LSTM Prediction
+# LSTM Prediction using the pre-trained model
 def lstm_prediction(data):
     try:
         scaler = StandardScaler()
         scaled_data = scaler.fit_transform(data['Close'].values.reshape(-1, 1))
-        
-        model = Sequential([
-            Input(shape=(scaled_data.shape[1], 1)),
-            LSTM(units=50, return_sequences=True),
-            LSTM(units=50),
-            Dense(1)
-        ])
-        model.compile(optimizer='adam', loss='mean_squared_error')
-        model.fit(scaled_data, scaled_data, epochs=1, batch_size=1, verbose=0)
-        
-        prediction = model.predict(scaled_data[-1].reshape(1, 1, 1))
+
+        # Predict using the pre-trained LSTM model
+        prediction = lstm_model.predict(scaled_data[-1].reshape(1, 1, 1))
         return scaler.inverse_transform(prediction).flatten().tolist()
     except Exception as e:
         print(f"LSTM error: {e}")
@@ -75,7 +81,7 @@ def generate_chart(symbol, is_crypto=False):
             print(f"No data found for {symbol}.")
             return None
         
-        arima_pred = arima_prediction(data)
+        arima_pred = arima_prediction()
         lstm_pred = lstm_prediction(data)
 
         # Create chart
