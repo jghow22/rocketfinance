@@ -3,13 +3,11 @@ import pandas as pd
 import numpy as np
 import yfinance as yf
 from sklearn.preprocessing import StandardScaler
-from keras.models import load_model
-from statsmodels.tsa.arima.model import ARIMA
-import joblib
 import matplotlib.pyplot as plt
 import requests
 from flask import Flask, jsonify, request
 from flask_cors import CORS
+from modelhandler import load_lstm_model, load_arima_model, lstm_prediction, arima_prediction
 
 # Suppress TensorFlow logs and force CPU usage
 os.environ["TF_CPP_MIN_LOG_LEVEL"] = "3"
@@ -22,26 +20,16 @@ plt.style.use('dark_background')
 app = Flask(__name__)
 CORS(app)  # Enable CORS for cross-origin requests
 
-# Paths to pre-trained models
-LSTM_MODEL_PATH = "models/lstm_model.h5"  # Adjust path if models are in a subdirectory
-ARIMA_MODEL_PATH = "models/arima_model.pkl"
-
-# Debugging: Print current working directory and list files
-print("Current working directory:", os.getcwd())
-print("Files in the directory:", os.listdir(os.getcwd()))
-if os.path.exists("models"):
-    print("Files in 'models' directory:", os.listdir("models"))
-
-# Load pre-trained models
+# Load models from modelhandler
 try:
-    lstm_model = load_model(LSTM_MODEL_PATH)
-    print(f"LSTM model loaded from {LSTM_MODEL_PATH}")
+    lstm_model = load_lstm_model()
+    print("LSTM model loaded successfully.")
 except Exception as e:
     print(f"Error loading LSTM model: {e}")
 
 try:
-    arima_model = joblib.load(ARIMA_MODEL_PATH)
-    print(f"ARIMA model loaded from {ARIMA_MODEL_PATH}")
+    arima_model = load_arima_model()
+    print("ARIMA model loaded successfully.")
 except Exception as e:
     print(f"Error loading ARIMA model: {e}")
 
@@ -58,28 +46,6 @@ def fetch_news(symbol):
         print(f"Error fetching news: {e}")
         return []
 
-# ARIMA Prediction using the pre-trained model
-def arima_prediction():
-    try:
-        # Forecast using the loaded ARIMA model
-        return arima_model.forecast(steps=5).tolist()
-    except Exception as e:
-        print(f"ARIMA error: {e}")
-        return []
-
-# LSTM Prediction using the pre-trained model
-def lstm_prediction(data):
-    try:
-        scaler = StandardScaler()
-        scaled_data = scaler.fit_transform(data['Close'].values.reshape(-1, 1))
-
-        # Predict using the pre-trained LSTM model
-        prediction = lstm_model.predict(scaled_data[-1].reshape(1, 1, 1))
-        return scaler.inverse_transform(prediction).flatten().tolist()
-    except Exception as e:
-        print(f"LSTM error: {e}")
-        return []
-
 # Generate and Save Chart
 def generate_chart(symbol, is_crypto=False):
     try:
@@ -88,8 +54,8 @@ def generate_chart(symbol, is_crypto=False):
             print(f"No data found for {symbol}.")
             return None
         
-        arima_pred = arima_prediction()
-        lstm_pred = lstm_prediction(data)
+        arima_pred = arima_prediction(arima_model)
+        lstm_pred = lstm_prediction(lstm_model, data)
 
         # Create chart
         fig, ax = plt.subplots(figsize=(10, 6))
