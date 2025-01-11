@@ -22,10 +22,17 @@ plt.style.use('dark_background')
 app = Flask(__name__)
 CORS(app)  # Enable CORS for cross-origin requests
 
-# Load pre-trained models
-LSTM_MODEL_PATH = "lstm_model.h5"
-ARIMA_MODEL_PATH = "arima_model.pkl"
+# Paths to pre-trained models
+LSTM_MODEL_PATH = "models/lstm_model.h5"  # Adjust path if models are in a subdirectory
+ARIMA_MODEL_PATH = "models/arima_model.pkl"
 
+# Debugging: Print current working directory and list files
+print("Current working directory:", os.getcwd())
+print("Files in the directory:", os.listdir(os.getcwd()))
+if os.path.exists("models"):
+    print("Files in 'models' directory:", os.listdir("models"))
+
+# Load pre-trained models
 try:
     lstm_model = load_model(LSTM_MODEL_PATH)
     print(f"LSTM model loaded from {LSTM_MODEL_PATH}")
