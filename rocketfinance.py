@@ -8,7 +8,7 @@ from modelhandler import create_lstm_model, create_arima_model, lstm_prediction,
 
 # Flask application setup
 app = Flask(__name__)
-CORS(app)
+CORS(app, resources={r"/*": {"origins": "*"}})  # Allow all origins
 
 # Recreate models
 lstm_model = create_lstm_model()
@@ -27,21 +27,25 @@ def home():
 @app.route("/process", methods=["GET"])
 def process():
     symbol = request.args.get("symbol", "AAPL")
+    print(f"Received request for symbol: {symbol}")  # Debugging log
     try:
+        # Fetch data and build ARIMA model
         data = fetch_data(symbol)
-        
-        # Create ARIMA model on the fly
         arima_model = create_arima_model(data)
         
         # Generate predictions
         lstm_pred = lstm_prediction(lstm_model, data)
         arima_pred = arima_prediction(arima_model)
 
-        return jsonify({
+        # Construct response
+        response = {
             "lstm_prediction": lstm_pred,
             "arima_prediction": arima_pred
-        })
+        }
+        print("Response:", response)  # Debugging log
+        return jsonify(response)
     except Exception as e:
+        print(f"Error: {e}")  # Debugging log
         return jsonify({"error": str(e)}), 500
 
 if __name__ == "__main__":
