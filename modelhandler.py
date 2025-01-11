@@ -1,36 +1,26 @@
-import base64
-import io
-from keras.models import model_from_json
+from keras.models import Sequential
+from keras.layers import Dense, LSTM, Input
 from statsmodels.tsa.arima.model import ARIMA
-import joblib
 from sklearn.preprocessing import StandardScaler
 
-# Base64-encoded LSTM model JSON and weights
-LSTM_MODEL_JSON = """<YOUR_BASE64_ENCODED_MODEL_JSON>"""
-LSTM_MODEL_WEIGHTS = """<YOUR_BASE64_ENCODED_MODEL_WEIGHTS>"""
-
-# Base64-encoded ARIMA model
-ARIMA_MODEL = """<YOUR_BASE64_ENCODED_ARIMA_MODEL>"""
-
-def load_lstm_model():
-    """Load the LSTM model from embedded JSON and weights."""
-    # Decode the JSON
-    model_json = base64.b64decode(LSTM_MODEL_JSON).decode("utf-8")
-    model = model_from_json(model_json)
-
-    # Decode and load weights
-    weights = base64.b64decode(LSTM_MODEL_WEIGHTS)
-    with io.BytesIO(weights) as f:
-        model.load_weights(f)
-
+def create_lstm_model():
+    """Recreate the LSTM model programmatically."""
+    model = Sequential([
+        Input(shape=(10, 1)),  # Adjust the input shape based on your data
+        LSTM(units=50, return_sequences=True),
+        LSTM(units=50),
+        Dense(1)
+    ])
+    model.compile(optimizer='adam', loss='mean_squared_error')
+    print("LSTM model recreated successfully.")
     return model
 
-def load_arima_model():
-    """Load the ARIMA model from embedded base64."""
-    # Decode the model
-    model_data = base64.b64decode(ARIMA_MODEL)
-    with io.BytesIO(model_data) as f:
-        return joblib.load(f)
+def create_arima_model(data):
+    """Recreate and fit the ARIMA model."""
+    model = ARIMA(data['Close'], order=(5, 1, 0))  # Adjust order as needed
+    model_fit = model.fit()
+    print("ARIMA model recreated and trained successfully.")
+    return model_fit
 
 def lstm_prediction(model, data):
     """Make predictions using the LSTM model."""
