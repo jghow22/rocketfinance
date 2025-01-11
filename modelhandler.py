@@ -17,12 +17,15 @@ def create_lstm_model():
 
 def create_arima_model(data):
     """Recreate and fit the ARIMA model."""
-    # Ensure the data has a daily frequency
-    data = data.asfreq("D")
-    model = ARIMA(data['Close'], order=(5, 1, 0))  # Adjust order as needed
-    model_fit = model.fit()
-    print("ARIMA model recreated and trained successfully.")
-    return model_fit
+    try:
+        data = data.asfreq("D")
+        model = ARIMA(data['Close'], order=(2, 1, 2))  # Adjusted order for faster fitting
+        model_fit = model.fit()
+        print("ARIMA model recreated and trained successfully.")
+        return model_fit
+    except Exception as e:
+        print(f"Error in ARIMA model creation: {e}")
+        raise
 
 def lstm_prediction(model, data):
     """Make predictions using the LSTM model."""
