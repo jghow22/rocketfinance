@@ -1,45 +1,38 @@
-import yfinance as yf
+import os
+from keras.models import load_model
 import joblib
 from sklearn.preprocessing import StandardScaler
-from keras.models import Sequential
-from keras.layers import Dense, LSTM, Input
-from statsmodels.tsa.arima.model import ARIMA
 
-# Function to fetch data
-def fetch_data(symbol, period="1y", interval="1d"):
-    data = yf.download(symbol, period=period, interval=interval)
-    if data.empty:
-        raise ValueError(f"No data found for symbol: {symbol}")
-    return data
+LSTM_MODEL_PATH = "models/lstm_model.h5"  # Adjust if necessary
+ARIMA_MODEL_PATH = "models/arima_model.pkl"
 
-# Train and save LSTM model
-def train_lstm(data):
-    scaler = StandardScaler()
-    scaled_data = scaler.fit_transform(data['Close'].values.reshape(-1, 1))
+def load_lstm_model():
+    """Load the pre-trained LSTM model."""
+    if not os.path.exists(LSTM_MODEL_PATH):
+        raise FileNotFoundError(f"LSTM model not found at {LSTM_MODEL_PATH}")
+    return load_model(LSTM_MODEL_PATH)
 
-    model = Sequential([
-        Input(shape=(scaled_data.shape[1], 1)),
-        LSTM(units=50, return_sequences=True),
-        LSTM(units=50),
-        Dense(1)
-    ])
-    model.compile(optimizer='adam', loss='mean_squared_error')
-    model.fit(scaled_data, scaled_data, epochs=10, batch_size=32, verbose=1)
+def load_arima_model():
+    """Load the pre-trained ARIMA model."""
+    if not os.path.exists(ARIMA_MODEL_PATH):
+        raise FileNotFoundError(f"ARIMA model not found at {ARIMA_MODEL_PATH}")
+    return joblib.load(ARIMA_MODEL_PATH)
 
-    model.save("lstm_model.h5")
-    print("LSTM model saved as 'lstm_model.h5'")
+def lstm_prediction(model, data):
+    """Make predictions using the LSTM model."""
+    try:
+        scaler = StandardScaler()
+        scaled_data = scaler.fit_transform(data['Close'].values.reshape(-1, 1))
+        prediction = model.predict(scaled_data[-1].reshape(1, 1, 1))
+        return scaler.inverse_transform(prediction).flatten().tolist()
+    except Exception as e:
+        print(f"LSTM prediction error: {e}")
+        return []
 
-# Train and save ARIMA model
-def train_arima(data):
-    data = data.asfreq("D")
-    model = ARIMA(data['Close'], order=(5, 1, 0))
-    model_fit = model.fit()
-    joblib.dump(model_fit, "arima_model.pkl")
-    print("ARIMA model saved as 'arima_model.pkl'")
-
-# Main process
-if __name__ == "__main__":
-    symbol = "AAPL"  # Replace with the desired stock symbol
-    data = fetch_data(symbol)
-    train_lstm(data)
-    train_arima(data)
+def arima_prediction(model):
+    """Make predictions using the ARIMA model."""
+    try:
+        return model.forecast(steps=5).tolist()
+    except Exception as e:
+        print(f"ARIMA prediction error: {e}")
+        return []
