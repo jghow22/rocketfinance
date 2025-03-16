@@ -10,7 +10,7 @@ from modelhandler import create_lstm_model, create_arima_model, lstm_prediction,
 app = Flask(__name__)
 CORS(app, resources={r"/*": {"origins": "*"}})
 
-# OpenAI API Key (Set this securely in your environment variables)
+# OpenAI API Key (set this securely in your environment variables)
 openai.api_key = os.getenv("OPENAI_API_KEY")  
 
 # Load LSTM Model
@@ -43,8 +43,10 @@ def refine_predictions_with_openai(symbol, lstm_pred, arima_pred, history):
     try:
         response = openai.ChatCompletion.create(
             model="gpt-4-turbo",
-            messages=[{"role": "system", "content": "You are a stock market AI assistant."},
-                      {"role": "user", "content": prompt}]
+            messages=[
+                {"role": "system", "content": "You are a stock market AI assistant."},
+                {"role": "user", "content": prompt}
+            ]
         )
         refined_prediction = response["choices"][0]["message"]["content"]
         return refined_prediction
@@ -57,6 +59,7 @@ def process():
     symbol = request.args.get("symbol", "AAPL")
     print(f"Received request for symbol: {symbol}")
 
+    # Check if the result is cached
     cached_result = cache.get(symbol)
     if cached_result:
         print("Returning cached result.")
@@ -76,6 +79,7 @@ def process():
             "arima_prediction": arima_pred,
             "openai_refined_prediction": refined_prediction
         }
+        # Cache the result for future requests
         cache[symbol] = response
         return jsonify(response)
     except Exception as e:
