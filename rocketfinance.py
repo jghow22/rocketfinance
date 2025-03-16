@@ -18,7 +18,7 @@ CORS(app, resources={r"/*": {"origins": "*"}})
 # OpenAI API Key (set this securely in your environment variables)
 openai.api_key = os.getenv("OPENAI_API_KEY")
 
-# Model Handler Functions (Integrated from modelhandler.py)
+# Model Handler Functions (Integrated directly)
 
 def create_lstm_model():
     """Recreate the LSTM model programmatically."""
@@ -103,6 +103,11 @@ def refine_predictions_with_openai(symbol, lstm_pred, arima_pred, history):
     except Exception as e:
         print(f"OpenAI API error: {e}")
         return "Error in refining prediction."
+
+# Optional: Add a root route to handle "/" requests and avoid 404 errors.
+@app.route("/")
+def index():
+    return "Red Tape Trading API is running."
 
 @app.route("/process", methods=["GET"])
 def process():
