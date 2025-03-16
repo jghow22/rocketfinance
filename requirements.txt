@@ -10,3 +10,4 @@ requests
 flask
 flask-cors
 gunicorn
+openai
