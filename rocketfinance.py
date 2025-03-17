@@ -35,7 +35,8 @@ def create_lstm_model():
 def create_arima_model(data):
     """Recreate and fit the ARIMA model."""
     try:
-        data = data.asfreq("D").fillna(method="ffill")
+        # Note: Using ffill() instead of fillna(method="ffill") to avoid future warnings.
+        data = data.asfreq("D").ffill()
         model = ARIMA(data['Close'], order=(0, 1, 0))
         model_fit = model.fit()
         print("ARIMA model recreated and trained successfully.")
@@ -72,11 +73,10 @@ cache = {}
 def fetch_data(symbol, timeframe):
     """Fetch historical data for a stock symbol using the specified timeframe.
        Maps dropdown timeframe values to valid yfinance period strings."""
-    # Mapping from dropdown values to valid yfinance period strings
     timeframe_mapping = {
         "1mo": "1mo",
         "3mo": "3mo",
-        "1yr": "1y"  # Map "1yr" to "1y"
+        "1yr": "1y"  # "1yr" from the dropdown maps to "1y"
     }
     period = timeframe_mapping.get(timeframe, "1mo")
     
