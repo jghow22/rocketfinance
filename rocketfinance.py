@@ -20,7 +20,6 @@ openai.api_key = os.getenv("OPENAI_API_KEY")
 # ---------------------------
 # Model Handler Functions
 # ---------------------------
-
 def create_lstm_model():
     """Recreate the LSTM model programmatically."""
     model = Sequential([
@@ -70,11 +69,27 @@ cache = {}
 # ---------------------------
 # Helper Functions
 # ---------------------------
-
 def fetch_data(symbol, timeframe):
-    """Fetch historical data for a stock symbol using the specified timeframe."""
+    """Fetch historical data for a stock symbol using the specified timeframe.
+       Maps user-friendly timeframe values to valid yfinance period strings."""
+    # Mapping from dropdown values to valid yfinance period strings
+    timeframe_mapping = {
+        "Vanilla": "1mo",  # Map "Vanilla" to 1 month (adjust as needed)
+        "1mo": "1mo",
+        "3mo": "3mo",
+        "6mo": "6mo",
+        "1y": "1y",
+        "2y": "2y",
+        "5y": "5y",
+        "10y": "10y",
+        "ytd": "ytd",
+        "max": "max"
+    }
+    # Use the mapping, defaulting to "1mo" if not found
+    period = timeframe_mapping.get(timeframe, "1mo")
+    
     try:
-        data = yf.download(symbol, period=timeframe, interval="1d")
+        data = yf.download(symbol, period=period, interval="1d")
         if data.empty:
             raise ValueError(f"No data found for symbol: {symbol}")
         return data
@@ -133,7 +148,6 @@ def refine_predictions_with_openai(symbol, lstm_pred, arima_pred, history):
 # ---------------------------
 # Flask Routes
 # ---------------------------
-
 @app.route("/")
 def index():
     return "Red Tape Trading API is running."
@@ -141,7 +155,7 @@ def index():
 @app.route("/process", methods=["GET"])
 def process():
     symbol = request.args.get("symbol", "AAPL")
-    timeframe = request.args.get("timeframe", "1mo")
+    timeframe = request.args.get("timeframe", "Vanilla")  # Default to "Vanilla"
     print(f"Received request for symbol: {symbol} with timeframe: {timeframe}")
 
     cache_key = f"{symbol.upper()}_{timeframe}"
