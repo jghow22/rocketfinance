@@ -10,8 +10,8 @@ from keras.layers import Dense, LSTM, Input
 from statsmodels.tsa.arima.model import ARIMA
 from sklearn.preprocessing import StandardScaler
 
-# Initialize Flask App
-app = Flask(__name__)
+# Initialize Flask App with static folder (Flask serves static files automatically)
+app = Flask(__name__, static_folder="static")
 CORS(app, resources={r"/*": {"origins": "*"}})
 
 # OpenAI API Key (set securely in your environment variables)
@@ -24,7 +24,7 @@ openai.api_key = os.getenv("OPENAI_API_KEY")
 def create_lstm_model():
     """Recreate the LSTM model programmatically."""
     model = Sequential([
-        Input(shape=(10, 1)),  # Adjust the input shape as needed
+        Input(shape=(10, 1)),  # Adjust input shape as needed
         LSTM(units=50, return_sequences=True),
         LSTM(units=50),
         Dense(1)
@@ -36,8 +36,8 @@ def create_lstm_model():
 def create_arima_model(data):
     """Recreate and fit the ARIMA model."""
     try:
-        data = data.asfreq("D").fillna(method="ffill")  # Fill missing values
-        model = ARIMA(data['Close'], order=(0, 1, 0))  # Simplified order
+        data = data.asfreq("D").fillna(method="ffill")
+        model = ARIMA(data['Close'], order=(0, 1, 0))
         model_fit = model.fit()
         print("ARIMA model recreated and trained successfully.")
         return model_fit
@@ -50,7 +50,6 @@ def lstm_prediction(model, data):
     try:
         scaler = StandardScaler()
         scaled_data = scaler.fit_transform(data['Close'].values.reshape(-1, 1))
-        # Adjust reshape parameters as needed
         prediction = model.predict(scaled_data[-1].reshape(1, 1, 1))
         return scaler.inverse_transform(prediction).flatten().tolist()
     except Exception as e:
@@ -65,7 +64,6 @@ def arima_prediction(model):
         print(f"ARIMA prediction error: {e}")
         return []
 
-# Create the LSTM model once
 lstm_model = create_lstm_model()
 cache = {}
 
@@ -146,7 +144,6 @@ def process():
     timeframe = request.args.get("timeframe", "1mo")
     print(f"Received request for symbol: {symbol} with timeframe: {timeframe}")
 
-    # Use a combined cache key for symbol and timeframe
     cache_key = f"{symbol.upper()}_{timeframe}"
     if cache_key in cache:
         print("Returning cached result.")
