@@ -71,21 +71,13 @@ cache = {}
 # ---------------------------
 def fetch_data(symbol, timeframe):
     """Fetch historical data for a stock symbol using the specified timeframe.
-       Maps user-friendly timeframe values to valid yfinance period strings."""
+       Maps dropdown timeframe values to valid yfinance period strings."""
     # Mapping from dropdown values to valid yfinance period strings
     timeframe_mapping = {
-        "Vanilla": "1mo",  # Map "Vanilla" to 1 month (adjust as needed)
         "1mo": "1mo",
         "3mo": "3mo",
-        "6mo": "6mo",
-        "1y": "1y",
-        "2y": "2y",
-        "5y": "5y",
-        "10y": "10y",
-        "ytd": "ytd",
-        "max": "max"
+        "1yr": "1y"  # Map "1yr" to "1y"
     }
-    # Use the mapping, defaulting to "1mo" if not found
     period = timeframe_mapping.get(timeframe, "1mo")
     
     try:
@@ -155,7 +147,7 @@ def index():
 @app.route("/process", methods=["GET"])
 def process():
     symbol = request.args.get("symbol", "AAPL")
-    timeframe = request.args.get("timeframe", "Vanilla")  # Default to "Vanilla"
+    timeframe = request.args.get("timeframe", "1mo")  # Default to "1mo"
     print(f"Received request for symbol: {symbol} with timeframe: {timeframe}")
 
     cache_key = f"{symbol.upper()}_{timeframe}"
