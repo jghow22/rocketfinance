@@ -14,7 +14,7 @@ from sklearn.preprocessing import StandardScaler
 app = Flask(__name__, static_folder="static")
 CORS(app, resources={r"/*": {"origins": "*"}})
 
-# OpenAI API Key (set securely in your environment variables)
+# Set OpenAI API Key from environment variables
 openai.api_key = os.getenv("OPENAI_API_KEY")
 
 # ---------------------------
@@ -76,8 +76,10 @@ cache = {}
 # Helper Functions
 # ---------------------------
 def fetch_data(symbol, timeframe):
-    """Fetch historical data for a stock symbol using the specified timeframe.
-       Maps dropdown timeframe values to valid yfinance period strings."""
+    """
+    Fetch historical data for a stock symbol using the specified timeframe.
+    Maps dropdown timeframe values to valid yfinance period strings.
+    """
     timeframe_mapping = {
         "1mo": "1mo",
         "3mo": "3mo",
@@ -181,6 +183,7 @@ def process():
         return jsonify(response)
     except Exception as e:
         print(f"Error processing request: {e}")
+        # Return a JSON error so the UI can display a message
         return jsonify({"error": str(e)}), 500
 
 if __name__ == "__main__":
