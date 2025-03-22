@@ -5,8 +5,8 @@ import yfinance as yf
 from flask import Flask, jsonify, request
 from flask_cors import CORS
 import matplotlib.pyplot as plt
-from keras.models import Sequential
-from keras.layers import Dense, LSTM, Input
+from tensorflow.keras.models import Sequential
+from tensorflow.keras.layers import Dense, LSTM, Input
 from statsmodels.tsa.arima.model import ARIMA
 from sklearn.preprocessing import StandardScaler
 
