@@ -11,6 +11,9 @@ from statsmodels.tsa.arima.model import ARIMA
 from sklearn.preprocessing import StandardScaler
 from datetime import datetime, timedelta
 
+# Set a custom user agent for yfinance requests
+os.environ["YAHOO_USER_AGENT"] = "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
+
 # Initialize Flask App with static folder (Flask serves static files automatically)
 app = Flask(__name__, static_folder="static")
 CORS(app, resources={r"/*": {"origins": "*"}})
@@ -78,8 +81,8 @@ cache = {}
 # ---------------------------
 def fetch_data(symbol, timeframe):
     """
-    Fetch historical data for a stock symbol using a date range computed from the current date.
-    This replaces the period-based query with an explicit start and end date.
+    Fetch historical data for a stock symbol using yf.download with explicit start and end dates.
+    This method sets a custom user agent and computes the date range based on the selected timeframe.
     """
     now = datetime.now()
     if timeframe == "1mo":
@@ -92,15 +95,17 @@ def fetch_data(symbol, timeframe):
         start = now - timedelta(days=30)
     
     try:
-        # Use explicit start and end dates
-        data = yf.Ticker(symbol).history(start=start.strftime("%Y-%m-%d"),
-                                           end=now.strftime("%Y-%m-%d"),
-                                           interval="1d")
+        data = yf.download(
+            symbol,
+            start=start.strftime("%Y-%m-%d"),
+            end=now.strftime("%Y-%m-%d"),
+            interval="1d"
+        )
         if data.empty:
             raise ValueError(f"No data found for symbol: {symbol}")
         return data
     except Exception as e:
-        print(f"Error fetching data for {symbol}: {e}")
+        print(f"Failed to fetch data for {symbol} reason: {e}")
         raise
 
 def generate_chart(data, symbol):
