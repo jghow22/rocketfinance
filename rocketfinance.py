@@ -9,6 +9,7 @@ from tensorflow.keras.models import Sequential
 from tensorflow.keras.layers import Dense, LSTM, Input
 from statsmodels.tsa.arima.model import ARIMA
 from sklearn.preprocessing import StandardScaler
+from datetime import datetime, timedelta
 
 # Initialize Flask App with static folder (Flask serves static files automatically)
 app = Flask(__name__, static_folder="static")
@@ -77,19 +78,24 @@ cache = {}
 # ---------------------------
 def fetch_data(symbol, timeframe):
     """
-    Fetch historical data for a stock symbol using the specified timeframe.
-    Uses yf.Ticker().history() instead of yf.download() to improve reliability.
+    Fetch historical data for a stock symbol using a date range computed from the current date.
+    This replaces the period-based query with an explicit start and end date.
     """
-    timeframe_mapping = {
-        "1mo": "1mo",
-        "3mo": "3mo",
-        "1yr": "1y"  # "1yr" from the dropdown maps to "1y"
-    }
-    period = timeframe_mapping.get(timeframe, "1mo")
+    now = datetime.now()
+    if timeframe == "1mo":
+        start = now - timedelta(days=30)
+    elif timeframe == "3mo":
+        start = now - timedelta(days=90)
+    elif timeframe == "1yr":
+        start = now - timedelta(days=365)
+    else:
+        start = now - timedelta(days=30)
     
     try:
-        ticker = yf.Ticker(symbol)
-        data = ticker.history(period=period, interval="1d")
+        # Use explicit start and end dates
+        data = yf.Ticker(symbol).history(start=start.strftime("%Y-%m-%d"),
+                                           end=now.strftime("%Y-%m-%d"),
+                                           interval="1d")
         if data.empty:
             raise ValueError(f"No data found for symbol: {symbol}")
         return data
