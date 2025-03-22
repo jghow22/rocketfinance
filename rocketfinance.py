@@ -23,7 +23,7 @@ openai.api_key = os.getenv("OPENAI_API_KEY")
 def create_lstm_model():
     """Recreate the LSTM model programmatically."""
     model = Sequential([
-        Input(shape=(10, 1)),  # Adjust input shape as needed
+        Input(shape=(10, 1)),  # Expecting a sequence of 10 time steps
         LSTM(units=50, return_sequences=True),
         LSTM(units=50),
         Dense(1)
@@ -35,7 +35,6 @@ def create_lstm_model():
 def create_arima_model(data):
     """Recreate and fit the ARIMA model."""
     try:
-        # Note: Using ffill() instead of fillna(method="ffill") to avoid future warnings.
         data = data.asfreq("D").ffill()
         model = ARIMA(data['Close'], order=(0, 1, 0))
         model_fit = model.fit()
@@ -50,7 +49,13 @@ def lstm_prediction(model, data):
     try:
         scaler = StandardScaler()
         scaled_data = scaler.fit_transform(data['Close'].values.reshape(-1, 1))
-        prediction = model.predict(scaled_data[-1].reshape(1, 1, 1))
+        if len(scaled_data) < 10:
+            print("Not enough data for LSTM prediction")
+            return []
+        # Use the last 10 data points as input for the LSTM model
+        input_sequence = scaled_data[-10:]
+        input_sequence = input_sequence.reshape(1, 10, 1)
+        prediction = model.predict(input_sequence)
         return scaler.inverse_transform(prediction).flatten().tolist()
     except Exception as e:
         print(f"LSTM prediction error: {e}")
@@ -114,10 +119,12 @@ def fetch_news(symbol):
 
 def refine_predictions_with_openai(symbol, lstm_pred, arima_pred, history):
     """Enhance stock predictions using OpenAI's API."""
+    # Limit historical data to the last 30 closing prices for prompt brevity
+    history_tail = history['Close'].tail(30).tolist()
     prompt = f"""
     Given the following stock data for {symbol.upper()}, analyze trends and refine the LSTM and ARIMA predictions.
     
-    - Historical Closing Prices: {history['Close'].tolist()}
+    - Historical Closing Prices (last 30 days): {history_tail}
     - LSTM Prediction: {lstm_pred}
     - ARIMA Prediction: {arima_pred}
 
@@ -129,7 +136,8 @@ def refine_predictions_with_openai(symbol, lstm_pred, arima_pred, history):
             messages=[
                 {"role": "system", "content": "You are a stock market AI assistant."},
                 {"role": "user", "content": prompt}
-            ]
+            ],
+            timeout=10  # Set a timeout to avoid long waiting times
         )
         refined_prediction = response["choices"][0]["message"]["content"]
         return refined_prediction
