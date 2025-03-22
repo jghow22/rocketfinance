@@ -78,7 +78,7 @@ cache = {}
 def fetch_data(symbol, timeframe):
     """
     Fetch historical data for a stock symbol using the specified timeframe.
-    Maps dropdown timeframe values to valid yfinance period strings.
+    Uses yf.Ticker().history() instead of yf.download() to improve reliability.
     """
     timeframe_mapping = {
         "1mo": "1mo",
@@ -88,7 +88,8 @@ def fetch_data(symbol, timeframe):
     period = timeframe_mapping.get(timeframe, "1mo")
     
     try:
-        data = yf.download(symbol, period=period, interval="1d")
+        ticker = yf.Ticker(symbol)
+        data = ticker.history(period=period, interval="1d")
         if data.empty:
             raise ValueError(f"No data found for symbol: {symbol}")
         return data
