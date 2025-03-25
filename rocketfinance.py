@@ -11,8 +11,10 @@ from statsmodels.tsa.arima.model import ARIMA
 from sklearn.preprocessing import StandardScaler
 from datetime import datetime, timedelta
 
-# Set a custom user agent for yfinance requests
-os.environ["YAHOO_USER_AGENT"] = "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
+# Set a modern user agent for yfinance requests
+os.environ["YAHOO_USER_AGENT"] = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                                  "AppleWebKit/537.36 (KHTML, like Gecko) "
+                                  "Chrome/108.0.0.0 Safari/537.36")
 
 # Initialize Flask App with static folder (Flask serves static files automatically)
 app = Flask(__name__, static_folder="static")
@@ -82,7 +84,6 @@ cache = {}
 def fetch_data(symbol, timeframe):
     """
     Fetch historical data for a stock symbol using yf.download with explicit start and end dates.
-    This method sets a custom user agent and computes the date range based on the selected timeframe.
     """
     now = datetime.now()
     if timeframe == "1mo":
@@ -95,14 +96,20 @@ def fetch_data(symbol, timeframe):
         start = now - timedelta(days=30)
     
     try:
+        print(f"Fetching data for {symbol} from {start.strftime('%Y-%m-%d')} to {now.strftime('%Y-%m-%d')}")
         data = yf.download(
             symbol,
             start=start.strftime("%Y-%m-%d"),
             end=now.strftime("%Y-%m-%d"),
-            interval="1d"
+            interval="1d",
+            progress=False
         )
+        # If data is returned without a timezone, localize to UTC
+        if not data.empty and data.index.tz is None:
+            data.index = data.index.tz_localize("UTC")
         if data.empty:
             raise ValueError(f"No data found for symbol: {symbol}")
+        print(f"Fetched data for {symbol}: {len(data)} rows")
         return data
     except Exception as e:
         print(f"Failed to fetch data for {symbol} reason: {e}")
@@ -133,7 +140,6 @@ def fetch_news(symbol):
 
 def refine_predictions_with_openai(symbol, lstm_pred, arima_pred, history):
     """Enhance stock predictions using OpenAI's API."""
-    # Limit historical data to the last 30 closing prices for prompt brevity
     history_tail = history['Close'].tail(30).tolist()
     prompt = f"""
     Given the following stock data for {symbol.upper()}, analyze trends and refine the LSTM and ARIMA predictions.
@@ -151,7 +157,7 @@ def refine_predictions_with_openai(symbol, lstm_pred, arima_pred, history):
                 {"role": "system", "content": "You are a stock market AI assistant."},
                 {"role": "user", "content": prompt}
             ],
-            timeout=10  # Set a timeout to avoid long waiting times
+            timeout=10
         )
         refined_prediction = response["choices"][0]["message"]["content"]
         return refined_prediction
@@ -169,7 +175,7 @@ def index():
 @app.route("/process", methods=["GET"])
 def process():
     symbol = request.args.get("symbol", "AAPL")
-    timeframe = request.args.get("timeframe", "1mo")  # Default to "1mo"
+    timeframe = request.args.get("timeframe", "1mo")
     print(f"Received request for symbol: {symbol} with timeframe: {timeframe}")
 
     cache_key = f"{symbol.upper()}_{timeframe}"
@@ -195,7 +201,6 @@ def process():
         return jsonify(response)
     except Exception as e:
         print(f"Error processing request: {e}")
-        # Return a JSON error so the UI can display a message
         return jsonify({"error": str(e)}), 500
 
 if __name__ == "__main__":
