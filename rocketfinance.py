@@ -13,9 +13,11 @@ from datetime import datetime, timedelta
 import numpy as np
 
 # Set a modern user agent for yfinance requests
-os.environ["YAHOO_USER_AGENT"] = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                                  "AppleWebKit/537.36 (KHTML, like Gecko) "
-                                  "Chrome/108.0.0.0 Safari/537.36")
+os.environ["YAHOO_USER_AGENT"] = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) "
+    "Chrome/108.0.0.0 Safari/537.36"
+)
 
 # Initialize Flask App with static folder (Flask serves static files automatically)
 app = Flask(__name__, static_folder="static")
@@ -87,17 +89,13 @@ def fetch_data(symbol, timeframe):
     Fetch historical data for a stock symbol.
     First try using yf.download with a period parameter.
     If that returns empty, try explicit start/end dates.
-    If still empty, use generated dummy data as a fallback.
+    If still empty, generate and return dummy data.
     """
-    period_mapping = {
-        "1mo": "1mo",
-        "3mo": "3mo",
-        "1yr": "1y"
-    }
+    period_mapping = {"1mo": "1mo", "3mo": "3mo", "1yr": "1y"}
     period = period_mapping.get(timeframe, "1mo")
     now = datetime.now()
-    fallback_used = False
 
+    # Try period method
     try:
         print(f"Attempting to fetch data for {symbol} with period={period}")
         data = yf.download(symbol, period=period, interval="1d", progress=False)
@@ -107,42 +105,46 @@ def fetch_data(symbol, timeframe):
             print(f"Fetched {len(data)} rows using period method.")
             return data
         else:
-            print("Period method returned empty data, trying explicit start/end dates.")
-            if timeframe == "1mo":
-                start = now - timedelta(days=30)
-            elif timeframe == "3mo":
-                start = now - timedelta(days=90)
-            elif timeframe == "1yr":
-                start = now - timedelta(days=365)
-            else:
-                start = now - timedelta(days=30)
-            print(f"Fetching data for {symbol} from {start.strftime('%Y-%m-%d')} to {now.strftime('%Y-%m-%d')}")
-            data = yf.download(symbol,
-                               start=start.strftime("%Y-%m-%d"),
-                               end=now.strftime("%Y-%m-%d"),
-                               interval="1d",
-                               progress=False)
-            if not data.empty:
-                if data.index.tz is None:
-                    data.index = data.index.tz_localize("UTC")
-                print(f"Fetched {len(data)} rows using explicit dates.")
-                return data
-            else:
-                print("Explicit dates method also returned empty data.")
-                fallback_used = True
+            print("Period method returned empty data.")
     except Exception as e:
-        print(f"Failed to fetch data for {symbol} reason: {e}")
-
-    if fallback_used or data.empty:
-        # Generate dummy data as fallback for testing
-        print(f"Using dummy data fallback for {symbol}")
-        # Create business day date range for the past 30 days
-        dates = pd.date_range(end=now, periods=22, freq='B')
-        dummy_close = np.linspace(150, 160, num=len(dates))
-        dummy_data = pd.DataFrame({'Close': dummy_close}, index=dates)
-        dummy_data.index = dummy_data.index.tz_localize("UTC")
-        print(f"Generated {len(dummy_data)} rows of dummy data for {symbol}")
-        return dummy_data
+        print(f"Error using period method for {symbol}: {e}")
+    
+    # Try explicit start/end dates
+    try:
+        if timeframe == "1mo":
+            start = now - timedelta(days=30)
+        elif timeframe == "3mo":
+            start = now - timedelta(days=90)
+        elif timeframe == "1yr":
+            start = now - timedelta(days=365)
+        else:
+            start = now - timedelta(days=30)
+        print(f"Fetching data for {symbol} from {start.strftime('%Y-%m-%d')} to {now.strftime('%Y-%m-%d')}")
+        data = yf.download(
+            symbol,
+            start=start.strftime("%Y-%m-%d"),
+            end=now.strftime("%Y-%m-%d"),
+            interval="1d",
+            progress=False
+        )
+        if not data.empty:
+            if data.index.tz is None:
+                data.index = data.index.tz_localize("UTC")
+            print(f"Fetched {len(data)} rows using explicit dates.")
+            return data
+        else:
+            print("Explicit dates method returned empty data.")
+    except Exception as e:
+        print(f"Error using explicit dates for {symbol}: {e}")
+    
+    # Fallback: generate dummy data
+    print(f"Using dummy data fallback for {symbol}")
+    dates = pd.date_range(end=now, periods=22, freq='B')
+    dummy_close = np.linspace(150, 160, num=len(dates))
+    dummy_data = pd.DataFrame({'Close': dummy_close}, index=dates)
+    dummy_data.index = dummy_data.index.tz_localize("UTC")
+    print(f"Generated {len(dummy_data)} rows of dummy data for {symbol}")
+    return dummy_data
 
 def generate_chart(data, symbol):
     """Generate a chart of the closing prices and save it in the static folder."""
