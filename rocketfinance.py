@@ -83,34 +83,49 @@ cache = {}
 # ---------------------------
 def fetch_data(symbol, timeframe):
     """
-    Fetch historical data for a stock symbol using yf.download with explicit start and end dates.
+    Fetch historical data for a stock symbol using yf.download.
+    First try using a period parameter; if that returns empty data,
+    fall back to explicit start/end dates.
     """
-    now = datetime.now()
-    if timeframe == "1mo":
-        start = now - timedelta(days=30)
-    elif timeframe == "3mo":
-        start = now - timedelta(days=90)
-    elif timeframe == "1yr":
-        start = now - timedelta(days=365)
-    else:
-        start = now - timedelta(days=30)
+    period_mapping = {
+        "1mo": "1mo",
+        "3mo": "3mo",
+        "1yr": "1y"
+    }
+    period = period_mapping.get(timeframe, "1mo")
     
     try:
-        print(f"Fetching data for {symbol} from {start.strftime('%Y-%m-%d')} to {now.strftime('%Y-%m-%d')}")
-        data = yf.download(
-            symbol,
-            start=start.strftime("%Y-%m-%d"),
-            end=now.strftime("%Y-%m-%d"),
-            interval="1d",
-            progress=False
-        )
-        # If data is returned without a timezone, localize to UTC
-        if not data.empty and data.index.tz is None:
-            data.index = data.index.tz_localize("UTC")
-        if data.empty:
-            raise ValueError(f"No data found for symbol: {symbol}")
-        print(f"Fetched data for {symbol}: {len(data)} rows")
-        return data
+        print(f"Attempting to fetch data for {symbol} with period={period}")
+        data = yf.download(symbol, period=period, interval="1d", progress=False)
+        if not data.empty:
+            if data.index.tz is None:
+                data.index = data.index.tz_localize("UTC")
+            print(f"Fetched {len(data)} rows using period method.")
+            return data
+        else:
+            print("Period method returned empty data, trying explicit start/end dates.")
+            now = datetime.now()
+            if timeframe == "1mo":
+                start = now - timedelta(days=30)
+            elif timeframe == "3mo":
+                start = now - timedelta(days=90)
+            elif timeframe == "1yr":
+                start = now - timedelta(days=365)
+            else:
+                start = now - timedelta(days=30)
+            print(f"Fetching data for {symbol} from {start.strftime('%Y-%m-%d')} to {now.strftime('%Y-%m-%d')}")
+            data = yf.download(symbol,
+                               start=start.strftime("%Y-%m-%d"),
+                               end=now.strftime("%Y-%m-%d"),
+                               interval="1d",
+                               progress=False)
+            if not data.empty:
+                if data.index.tz is None:
+                    data.index = data.index.tz_localize("UTC")
+                print(f"Fetched {len(data)} rows using explicit dates.")
+                return data
+            else:
+                raise ValueError(f"No data found for symbol: {symbol}")
     except Exception as e:
         print(f"Failed to fetch data for {symbol} reason: {e}")
         raise
