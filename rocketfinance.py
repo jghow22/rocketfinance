@@ -12,6 +12,9 @@ from sklearn.preprocessing import StandardScaler
 from datetime import datetime, timedelta
 import numpy as np
 
+# Suppress TensorFlow INFO and WARNING logs
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
+
 # Set a modern user agent for yfinance requests
 os.environ["YAHOO_USER_AGENT"] = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -51,7 +54,7 @@ def create_arima_model(data):
         return model_fit
     except Exception as e:
         print(f"Error in ARIMA model creation: {e}")
-        raise
+        return None
 
 def lstm_prediction(model, data):
     """Make predictions using the LSTM model."""
@@ -89,11 +92,12 @@ def fetch_data(symbol, timeframe):
     Fetch historical data for a stock symbol.
     First try using yf.download with a period parameter.
     If that returns empty, try explicit start/end dates.
-    If still empty, generate and return dummy data.
+    If still empty, always return generated dummy data.
     """
     period_mapping = {"1mo": "1mo", "3mo": "3mo", "1yr": "1y"}
     period = period_mapping.get(timeframe, "1mo")
     now = datetime.now()
+    data = None
 
     # Try period method
     try:
@@ -108,7 +112,7 @@ def fetch_data(symbol, timeframe):
             print("Period method returned empty data.")
     except Exception as e:
         print(f"Error using period method for {symbol}: {e}")
-    
+
     # Try explicit start/end dates
     try:
         if timeframe == "1mo":
@@ -120,13 +124,11 @@ def fetch_data(symbol, timeframe):
         else:
             start = now - timedelta(days=30)
         print(f"Fetching data for {symbol} from {start.strftime('%Y-%m-%d')} to {now.strftime('%Y-%m-%d')}")
-        data = yf.download(
-            symbol,
-            start=start.strftime("%Y-%m-%d"),
-            end=now.strftime("%Y-%m-%d"),
-            interval="1d",
-            progress=False
-        )
+        data = yf.download(symbol,
+                           start=start.strftime("%Y-%m-%d"),
+                           end=now.strftime("%Y-%m-%d"),
+                           interval="1d",
+                           progress=False)
         if not data.empty:
             if data.index.tz is None:
                 data.index = data.index.tz_localize("UTC")
@@ -136,7 +138,7 @@ def fetch_data(symbol, timeframe):
             print("Explicit dates method returned empty data.")
     except Exception as e:
         print(f"Error using explicit dates for {symbol}: {e}")
-    
+
     # Fallback: generate dummy data
     print(f"Using dummy data fallback for {symbol}")
     dates = pd.date_range(end=now, periods=22, freq='B')
@@ -217,7 +219,7 @@ def process():
         data = fetch_data(symbol, timeframe)
         arima_model_obj = create_arima_model(data)
         lstm_pred = lstm_prediction(lstm_model, data)
-        arima_pred = arima_prediction(arima_model_obj)
+        arima_pred = arima_prediction(arima_model_obj) if arima_model_obj is not None else []
         refined_prediction = refine_predictions_with_openai(symbol, lstm_pred, arima_pred, data)
         chart_filename = generate_chart(data, symbol)
         news = fetch_news(symbol)
