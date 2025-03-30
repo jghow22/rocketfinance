@@ -12,10 +12,13 @@ from sklearn.preprocessing import StandardScaler
 from datetime import datetime, timedelta
 import numpy as np
 
+# Global cache for responses
+cache = {}
+
 # Suppress TensorFlow logs
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
 
-# Set a modern user agent (not critical for Alpha Vantage, but included for consistency)
+# Set a modern user agent (for consistency)
 os.environ["YAHOO_USER_AGENT"] = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
     "AppleWebKit/537.36 (KHTML, like Gecko) "
@@ -68,11 +71,11 @@ def fetch_data(symbol, timeframe):
     df = pd.DataFrame.from_dict(ts_data, orient="index")
     df.index = pd.to_datetime(df.index)
     df.sort_index(inplace=True)
-    # For TIME_SERIES_DAILY, use the closing price from "4. close"
+    # Use the closing price from "4. close"
     df = df.rename(columns={"4. close": "Close"})
     df["Close"] = df["Close"].astype(float)
     
-    # Filter data to the requested timeframe
+    # Filter the DataFrame to the requested timeframe
     now = datetime.now()
     if timeframe == "1mo":
         start_date = now - timedelta(days=30)
@@ -149,7 +152,8 @@ lstm_model = create_lstm_model()
 # ---------------------------
 def generate_chart(data, symbol, forecast=None):
     """
-    Generate a chart of historical closing prices and, if provided, overlay the forecast.
+    Generate a chart of historical closing prices.
+    If forecast is provided, overlay it as a red dashed line with markers.
     """
     os.makedirs("static", exist_ok=True)
     filename = f"chart_{symbol.upper()}.png"
@@ -157,11 +161,12 @@ def generate_chart(data, symbol, forecast=None):
     
     plt.figure(figsize=(10, 5))
     plt.plot(data.index, data["Close"], label="Historical", color="blue")
+    
     if forecast and len(forecast) > 0:
         last_date = data.index[-1]
-        # Generate forecast dates (business days)
         forecast_dates = pd.date_range(start=last_date + timedelta(days=1), periods=len(forecast), freq="B")
         plt.plot(forecast_dates, forecast, label="Forecast", linestyle="--", marker="o", color="red", linewidth=2)
+    
     plt.title(f"{symbol.upper()} Closing Prices")
     plt.xlabel("Date")
     plt.ylabel("Close Price")
@@ -173,7 +178,7 @@ def generate_chart(data, symbol, forecast=None):
 
 def fetch_news(symbol):
     """
-    Return news articles for the symbol with a title, source, and summary.
+    Return news articles for the symbol, each with a title, source, and summary.
     """
     news = [
         {
@@ -184,15 +189,15 @@ def fetch_news(symbol):
         {
             "title": f"{symbol.upper()} announces new product line",
             "source": {"name": "Bloomberg"},
-            "summary": "In a recent press release, the company unveiled its latest product innovations, expected to drive growth in upcoming quarters."
+            "summary": "In a recent press release, the company unveiled its latest product innovations, expected to drive growth in the upcoming quarters."
         }
     ]
     return news
 
 def refine_predictions_with_openai(symbol, lstm_pred, arima_pred, history):
     """
-    Call the OpenAI API to refine predictions.
-    Returns a detailed analysis including future trends and a confidence level.
+    Call the OpenAI API to provide a detailed analysis of the stock.
+    Returns an analysis including future trends and a confidence level.
     """
     history_tail = history["Close"].tail(30).tolist()
     prompt = f"""
@@ -231,10 +236,12 @@ def process():
     symbol = request.args.get("symbol", "AAPL")
     timeframe = request.args.get("timeframe", "1mo")
     print(f"Received request for symbol: {symbol} with timeframe: {timeframe}")
+    
     cache_key = f"{symbol.upper()}_{timeframe}"
     if cache_key in cache:
         print("Returning cached result.")
         return jsonify(cache[cache_key])
+    
     try:
         data = fetch_data(symbol, timeframe)
         arima_model_obj = create_arima_model(data)
@@ -243,6 +250,7 @@ def process():
         refined_prediction = refine_predictions_with_openai(symbol, lstm_pred, arima_pred, data)
         chart_filename = generate_chart(data, symbol, forecast=arima_pred)
         news = fetch_news(symbol)
+        
         response = {
             "lstm_prediction": lstm_pred,
             "arima_prediction": arima_pred,
