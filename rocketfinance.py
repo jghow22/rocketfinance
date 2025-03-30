@@ -82,17 +82,16 @@ def fetch_data(symbol, timeframe):
     return df
 
 # ---------------------------
-# Model Handler Functions (ARIMA)
+# Model Handler Functions (ARIMA with trend)
 # ---------------------------
 def create_arima_model(data):
     """
     Create and fit an ARIMA model on the 'Close' price.
-    Using ARIMA(1,1,0) with no trend to capture momentum.
+    Using ARIMA(1,1,1) with a linear trend (trend='t') to capture momentum and variability.
     """
     try:
         data = data.asfreq("D").ffill()
-        # ARIMA(1,1,0) can capture momentum in the differenced series
-        model = ARIMA(data["Close"], order=(1, 1, 0), trend='n')
+        model = ARIMA(data["Close"], order=(1, 1, 1), trend='t')
         model_fit = model.fit()
         print("ARIMA model created and fitted successfully.")
         return model_fit
@@ -143,18 +142,20 @@ def generate_chart(data, symbol, forecast=None):
 
 def fetch_news(symbol):
     """
-    Return news articles for the symbol with title, source, and summary.
+    Return news articles for the symbol, each with a title, source, and summary.
     """
     news = [
         {
             "title": f"{symbol.upper()} surges amid market optimism",
             "source": {"name": "Reuters"},
-            "summary": "The stock experienced a significant surge today as investors reacted to strong earnings and positive market sentiment. Analysts note that volatility remains high, suggesting caution."
+            "summary": ("The stock experienced a significant surge today as investors reacted to strong earnings and positive market sentiment. "
+                        "Analysts note that while volatility remains, there are signs of a potential rebound.")
         },
         {
             "title": f"{symbol.upper()} announces new product line",
             "source": {"name": "Bloomberg"},
-            "summary": "In a recent press release, the company unveiled its latest product innovations. Experts believe these developments may drive growth in the upcoming quarters, though market conditions warrant careful monitoring."
+            "summary": ("In a recent press release, the company unveiled its latest product innovations. Experts believe these developments "
+                        "may drive growth, although market conditions require careful monitoring.")
         }
     ]
     return news
@@ -162,8 +163,7 @@ def fetch_news(symbol):
 def refine_predictions_with_openai(symbol, lstm_pred, arima_pred, history):
     """
     Call the OpenAI API to provide a detailed analysis of the stock.
-    The analysis should cover historical performance, an evaluation of the ARIMA forecast,
-    a confidence level, and market recommendations.
+    The analysis includes historical performance, an evaluation of the ARIMA forecast, a confidence level, and market recommendations.
     """
     history_tail = history["Close"].tail(30).tolist()
     prompt = f"""
@@ -174,7 +174,7 @@ def refine_predictions_with_openai(symbol, lstm_pred, arima_pred, history):
 
     Provide a detailed analysis that includes:
     - Key observations on historical performance (e.g., highs, lows, volatility, trends).
-    - An evaluation of the ARIMA forecast. If the forecast appears flat, explain possible reasons.
+    - An evaluation of the ARIMA forecast. If the forecast is flat, explain possible reasons.
     - Your confidence level in the forecast.
     - Specific market recommendations, including risk management strategies.
 
