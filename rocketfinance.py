@@ -5,17 +5,20 @@ import pandas as pd
 from flask import Flask, jsonify, request
 from flask_cors import CORS
 import matplotlib.pyplot as plt
-from tensorflow.keras.models import Sequential
-from tensorflow.keras.layers import Dense, LSTM, Input
+#from tensorflow.keras.models import Sequential
+#from tensorflow.keras.layers import Dense, LSTM, Input
 from statsmodels.tsa.arima.model import ARIMA
 from sklearn.preprocessing import StandardScaler
 from datetime import datetime, timedelta
 import numpy as np
 
+# For testing, we disable TensorFlow-based model predictions.
+TEST_MODE = True  # Set to False to re-enable ML predictions later
+
 # Suppress TensorFlow INFO and WARNING logs
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
 
-# Set a modern user agent for Alpha Vantage requests (if needed)
+# Set a modern user agent for Alpha Vantage (if needed)
 os.environ["YAHOO_USER_AGENT"] = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
     "AppleWebKit/537.36 (KHTML, like Gecko) "
@@ -36,8 +39,7 @@ def fetch_data(symbol, timeframe):
     """
     Fetch historical daily adjusted stock data for a symbol from Alpha Vantage.
     Uses "compact" outputsize for 1mo/3mo and "full" for 1yr.
-    If the expected key is missing in the response, log the full response and
-    fall back to generated dummy data.
+    If the expected key is missing, logs the full response and falls back to dummy data.
     """
     api_key = os.getenv("ALPHAVANTAGE_API_KEY")
     if not api_key:
@@ -86,7 +88,8 @@ def fetch_data(symbol, timeframe):
         start_date = now - timedelta(days=30)
     df = df[df.index >= start_date]
     if df.empty:
-        raise ValueError(f"No data found for symbol: {symbol} in the specified timeframe")
+        print(f"No data found for {symbol} in the specified timeframe. Falling back to dummy data.")
+        return generate_dummy_data(symbol)
     if df.index.tz is None:
         df.index = df.index.tz_localize("UTC")
     
@@ -104,57 +107,74 @@ def generate_dummy_data(symbol):
     return dummy_data
 
 # ---------------------------
-# Model Handler Functions
+# (Disabled) Model Handler Functions
 # ---------------------------
-def create_lstm_model():
-    """Recreate the LSTM model programmatically."""
-    model = Sequential([
-        Input(shape=(10, 1)),
-        LSTM(units=50, return_sequences=True),
-        LSTM(units=50),
-        Dense(1)
-    ])
-    model.compile(optimizer='adam', loss='mean_squared_error')
-    print("LSTM model recreated successfully.")
-    return model
+if not TEST_MODE:
+    from tensorflow.keras.models import Sequential
+    from tensorflow.keras.layers import Dense, LSTM, Input
 
-def create_arima_model(data):
-    """Recreate and fit the ARIMA model."""
-    try:
-        data = data.asfreq("D").ffill()
-        model = ARIMA(data['Close'], order=(0, 1, 0))
-        model_fit = model.fit()
-        print("ARIMA model recreated and trained successfully.")
-        return model_fit
-    except Exception as e:
-        print(f"Error in ARIMA model creation: {e}")
-        return None
+    def create_lstm_model():
+        """Recreate the LSTM model programmatically."""
+        model = Sequential([
+            Input(shape=(10, 1)),
+            LSTM(units=50, return_sequences=True),
+            LSTM(units=50),
+            Dense(1)
+        ])
+        model.compile(optimizer='adam', loss='mean_squared_error')
+        print("LSTM model recreated successfully.")
+        return model
 
-def lstm_prediction(model, data):
-    """Make predictions using the LSTM model."""
-    try:
-        scaler = StandardScaler()
-        scaled_data = scaler.fit_transform(data['Close'].values.reshape(-1, 1))
-        if len(scaled_data) < 10:
-            print("Not enough data for LSTM prediction")
+    def create_arima_model(data):
+        """Recreate and fit the ARIMA model."""
+        try:
+            data = data.asfreq("D").ffill()
+            model = ARIMA(data['Close'], order=(0, 1, 0))
+            model_fit = model.fit()
+            print("ARIMA model recreated and trained successfully.")
+            return model_fit
+        except Exception as e:
+            print(f"Error in ARIMA model creation: {e}")
+            return None
+
+    def lstm_prediction(model, data):
+        """Make predictions using the LSTM model."""
+        try:
+            scaler = StandardScaler()
+            scaled_data = scaler.fit_transform(data['Close'].values.reshape(-1, 1))
+            if len(scaled_data) < 10:
+                print("Not enough data for LSTM prediction")
+                return []
+            input_sequence = scaled_data[-10:]
+            input_sequence = input_sequence.reshape(1, 10, 1)
+            prediction = model.predict(input_sequence)
+            return scaler.inverse_transform(prediction).flatten().tolist()
+        except Exception as e:
+            print(f"LSTM prediction error: {e}")
             return []
-        input_sequence = scaled_data[-10:]
-        input_sequence = input_sequence.reshape(1, 10, 1)
-        prediction = model.predict(input_sequence)
-        return scaler.inverse_transform(prediction).flatten().tolist()
-    except Exception as e:
-        print(f"LSTM prediction error: {e}")
-        return []
 
-def arima_prediction(model):
-    """Make predictions using the ARIMA model."""
-    try:
-        return model.forecast(steps=5).tolist()
-    except Exception as e:
-        print(f"ARIMA prediction error: {e}")
-        return []
+    def arima_prediction(model):
+        """Make predictions using the ARIMA model."""
+        try:
+            return model.forecast(steps=5).tolist()
+        except Exception as e:
+            print(f"ARIMA prediction error: {e}")
+            return []
+    
+    lstm_model = create_lstm_model()
+else:
+    # In test mode, we'll bypass model predictions and return dummy values.
+    def create_arima_model(data):
+        print("Skipping ARIMA model creation (test mode).")
+        return None
+    def lstm_prediction(model, data):
+        print("Skipping LSTM prediction (test mode).")
+        return [155]  # Dummy prediction
+    def arima_prediction(model):
+        print("Skipping ARIMA prediction (test mode).")
+        return [156, 157, 158, 159, 160]  # Dummy predictions
+    lstm_model = None
 
-lstm_model = create_lstm_model()
 cache = {}
 
 # ---------------------------
