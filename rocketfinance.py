@@ -58,11 +58,11 @@ def fetch_data(symbol, timeframe):
     df = pd.DataFrame.from_dict(ts_data, orient="index")
     df.index = pd.to_datetime(df.index)
     df.sort_index(inplace=True)
-    # Use closing price from "4. close"
+    # Use the closing price from "4. close"
     df = df.rename(columns={"4. close": "Close"})
     df["Close"] = df["Close"].astype(float)
     
-    # Filter data to the requested timeframe
+    # Filter the DataFrame to the requested timeframe
     now = datetime.now()
     if timeframe == "1mo":
         start_date = now - timedelta(days=30)
@@ -82,15 +82,16 @@ def fetch_data(symbol, timeframe):
     return df
 
 # ---------------------------
-# Model Handler Functions (ARIMA Only)
+# Model Handler Functions (ARIMA with drift)
 # ---------------------------
 def create_arima_model(data):
     """
     Create and fit an ARIMA model on the 'Close' price.
+    Using order (0,1,0) with drift (trend='c') to capture any trend.
     """
     try:
         data = data.asfreq("D").ffill()
-        model = ARIMA(data["Close"], order=(0, 1, 0))
+        model = ARIMA(data["Close"], order=(0, 1, 0), trend='c')
         model_fit = model.fit()
         print("ARIMA model created and fitted successfully.")
         return model_fit
@@ -141,37 +142,42 @@ def generate_chart(data, symbol, forecast=None):
 
 def fetch_news(symbol):
     """
-    Return news articles for the symbol with title, source, and summary.
+    Return news articles for the symbol, each with a title, source, and summary.
     """
     news = [
         {
             "title": f"{symbol.upper()} surges amid market optimism",
             "source": {"name": "Reuters"},
-            "summary": "The stock experienced a significant surge today as investors reacted to strong earnings and optimistic market trends."
+            "summary": "The stock experienced a significant surge today as investors reacted to strong earnings and positive market sentiment. Analysts note that volatility remains high, suggesting caution."
         },
         {
             "title": f"{symbol.upper()} announces new product line",
             "source": {"name": "Bloomberg"},
-            "summary": "In a recent press release, the company unveiled its latest product innovations, expected to drive growth in the upcoming quarters."
+            "summary": "In a recent press release, the company unveiled its latest product innovations. Experts believe these developments may drive growth in the upcoming quarters, though market conditions warrant careful monitoring."
         }
     ]
     return news
 
 def refine_predictions_with_openai(symbol, lstm_pred, arima_pred, history):
     """
-    Call the OpenAI API to analyze the stock data and provide a detailed forecast analysis.
-    Since we are not using LSTM predictions here, we set it to "N/A".
+    Call the OpenAI API to provide a detailed analysis of the stock.
+    The analysis should include historical performance, forecast evaluation, confidence level,
+    and specific market recommendations.
     """
     history_tail = history["Close"].tail(30).tolist()
-    lstm_val = "N/A"
     prompt = f"""
     Analyze the following stock data for {symbol.upper()}:
+
+    Historical Closing Prices (last 30 days): {history_tail}
+    ARIMA Forecast (next 5 days): {arima_pred}
+
+    Provide a detailed analysis that includes:
+    - Key observations on historical performance (e.g., highs, lows, volatility, trends).
+    - An evaluation of the ARIMA forecast. If the forecast is flat, explain what that might imply.
+    - Your confidence level in the forecast.
+    - Market recommendations, including risk management strategies.
     
-    - Historical Closing Prices (last 30 days): {history_tail}
-    - LSTM Prediction: {lstm_val}
-    - ARIMA Forecast: {arima_pred}
-    
-    Provide a detailed analysis of the stock's potential future trends and include a confidence level in your forecast.
+    Format your analysis with clear headings and bullet points where appropriate.
     """
     try:
         response = openai.ChatCompletion.create(
@@ -180,7 +186,7 @@ def refine_predictions_with_openai(symbol, lstm_pred, arima_pred, history):
                 {"role": "system", "content": "You are a stock market expert."},
                 {"role": "user", "content": prompt}
             ],
-            timeout=10
+            timeout=15
         )
         refined_prediction = response["choices"][0]["message"]["content"]
         return refined_prediction
