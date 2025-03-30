@@ -5,31 +5,18 @@ import pandas as pd
 from flask import Flask, jsonify, request
 from flask_cors import CORS
 import matplotlib.pyplot as plt
-from tensorflow.keras.models import Sequential
-from tensorflow.keras.layers import Dense, LSTM, Input
 from statsmodels.tsa.arima.model import ARIMA
-from sklearn.preprocessing import StandardScaler
 from datetime import datetime, timedelta
 import numpy as np
 
 # Global cache for responses
 cache = {}
 
-# Suppress TensorFlow logs
-os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
-
-# Set a modern user agent (for consistency)
-os.environ["YAHOO_USER_AGENT"] = (
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-    "AppleWebKit/537.36 (KHTML, like Gecko) "
-    "Chrome/108.0.0.0 Safari/537.36"
-)
-
 # Initialize Flask App with static folder
 app = Flask(__name__, static_folder="static")
 CORS(app, resources={r"/*": {"origins": "*"}})
 
-# Set OpenAI API Key from environment variables
+# Set API keys from environment variables
 openai.api_key = os.getenv("OPENAI_API_KEY")
 
 # ---------------------------
@@ -71,11 +58,11 @@ def fetch_data(symbol, timeframe):
     df = pd.DataFrame.from_dict(ts_data, orient="index")
     df.index = pd.to_datetime(df.index)
     df.sort_index(inplace=True)
-    # Use the closing price from "4. close"
+    # Use closing price from "4. close"
     df = df.rename(columns={"4. close": "Close"})
     df["Close"] = df["Close"].astype(float)
     
-    # Filter the DataFrame to the requested timeframe
+    # Filter data to the requested timeframe
     now = datetime.now()
     if timeframe == "1mo":
         start_date = now - timedelta(days=30)
@@ -95,22 +82,12 @@ def fetch_data(symbol, timeframe):
     return df
 
 # ---------------------------
-# Model Handler Functions
+# Model Handler Functions (ARIMA Only)
 # ---------------------------
-def create_lstm_model():
-    """Create and compile the LSTM model."""
-    model = Sequential([
-        Input(shape=(10, 1)),
-        LSTM(units=50, return_sequences=True),
-        LSTM(units=50),
-        Dense(1)
-    ])
-    model.compile(optimizer='adam', loss='mean_squared_error')
-    print("LSTM model created successfully.")
-    return model
-
 def create_arima_model(data):
-    """Create and fit the ARIMA model."""
+    """
+    Create and fit an ARIMA model on the 'Close' price.
+    """
     try:
         data = data.asfreq("D").ffill()
         model = ARIMA(data["Close"], order=(0, 1, 0))
@@ -121,31 +98,16 @@ def create_arima_model(data):
         print(f"Error in ARIMA model creation: {e}")
         raise
 
-def lstm_prediction(model, data):
-    """Make predictions using the LSTM model."""
-    try:
-        scaler = StandardScaler()
-        scaled_data = scaler.fit_transform(data["Close"].values.reshape(-1, 1))
-        if len(scaled_data) < 10:
-            raise ValueError("Not enough data for LSTM prediction")
-        input_sequence = scaled_data[-10:]
-        input_sequence = input_sequence.reshape(1, 10, 1)
-        prediction = model.predict(input_sequence)
-        return scaler.inverse_transform(prediction).flatten().tolist()
-    except Exception as e:
-        print(f"LSTM prediction error: {e}")
-        raise
-
 def arima_prediction(model):
-    """Make predictions using the ARIMA model."""
+    """
+    Forecast the next 5 days using the ARIMA model.
+    """
     try:
         forecast = model.forecast(steps=5).tolist()
         return forecast
     except Exception as e:
         print(f"ARIMA prediction error: {e}")
         raise
-
-lstm_model = create_lstm_model()
 
 # ---------------------------
 # Other Helper Functions
@@ -172,13 +134,14 @@ def generate_chart(data, symbol, forecast=None):
     plt.ylabel("Close Price")
     plt.grid(True)
     plt.legend()
+    plt.gcf().autofmt_xdate()
     plt.savefig(filepath)
     plt.close()
     return filename
 
 def fetch_news(symbol):
     """
-    Return news articles for the symbol, each with a title, source, and summary.
+    Return news articles for the symbol with title, source, and summary.
     """
     news = [
         {
@@ -196,18 +159,19 @@ def fetch_news(symbol):
 
 def refine_predictions_with_openai(symbol, lstm_pred, arima_pred, history):
     """
-    Call the OpenAI API to provide a detailed analysis of the stock.
-    Returns an analysis including future trends and a confidence level.
+    Call the OpenAI API to analyze the stock data and provide a detailed forecast analysis.
+    Since we are not using LSTM predictions here, we set it to "N/A".
     """
     history_tail = history["Close"].tail(30).tolist()
+    lstm_val = "N/A"
     prompt = f"""
     Analyze the following stock data for {symbol.upper()}:
     
     - Historical Closing Prices (last 30 days): {history_tail}
-    - LSTM Prediction: {lstm_pred}
+    - LSTM Prediction: {lstm_val}
     - ARIMA Forecast: {arima_pred}
     
-    Provide a detailed analysis of the stock's potential future trends and a confidence level in your forecast.
+    Provide a detailed analysis of the stock's potential future trends and include a confidence level in your forecast.
     """
     try:
         response = openai.ChatCompletion.create(
@@ -245,14 +209,12 @@ def process():
     try:
         data = fetch_data(symbol, timeframe)
         arima_model_obj = create_arima_model(data)
-        lstm_pred = lstm_prediction(lstm_model, data)
         arima_pred = arima_prediction(arima_model_obj)
-        refined_prediction = refine_predictions_with_openai(symbol, lstm_pred, arima_pred, data)
+        refined_prediction = refine_predictions_with_openai(symbol, "N/A", arima_pred, data)
         chart_filename = generate_chart(data, symbol, forecast=arima_pred)
         news = fetch_news(symbol)
         
         response = {
-            "lstm_prediction": lstm_pred,
             "arima_prediction": arima_pred,
             "openai_refined_prediction": refined_prediction,
             "chart_path": chart_filename,
