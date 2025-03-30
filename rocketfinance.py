@@ -82,16 +82,17 @@ def fetch_data(symbol, timeframe):
     return df
 
 # ---------------------------
-# Model Handler Functions (ARIMA with drift)
+# Model Handler Functions (ARIMA)
 # ---------------------------
 def create_arima_model(data):
     """
     Create and fit an ARIMA model on the 'Close' price.
-    Using order (0,1,0) with drift (trend='c') to capture any trend.
+    Using ARIMA(1,1,0) with no trend to capture momentum.
     """
     try:
         data = data.asfreq("D").ffill()
-        model = ARIMA(data["Close"], order=(0, 1, 0), trend='c')
+        # ARIMA(1,1,0) can capture momentum in the differenced series
+        model = ARIMA(data["Close"], order=(1, 1, 0), trend='n')
         model_fit = model.fit()
         print("ARIMA model created and fitted successfully.")
         return model_fit
@@ -142,7 +143,7 @@ def generate_chart(data, symbol, forecast=None):
 
 def fetch_news(symbol):
     """
-    Return news articles for the symbol, each with a title, source, and summary.
+    Return news articles for the symbol with title, source, and summary.
     """
     news = [
         {
@@ -161,8 +162,8 @@ def fetch_news(symbol):
 def refine_predictions_with_openai(symbol, lstm_pred, arima_pred, history):
     """
     Call the OpenAI API to provide a detailed analysis of the stock.
-    The analysis should include historical performance, forecast evaluation, confidence level,
-    and specific market recommendations.
+    The analysis should cover historical performance, an evaluation of the ARIMA forecast,
+    a confidence level, and market recommendations.
     """
     history_tail = history["Close"].tail(30).tolist()
     prompt = f"""
@@ -173,11 +174,11 @@ def refine_predictions_with_openai(symbol, lstm_pred, arima_pred, history):
 
     Provide a detailed analysis that includes:
     - Key observations on historical performance (e.g., highs, lows, volatility, trends).
-    - An evaluation of the ARIMA forecast. If the forecast is flat, explain what that might imply.
+    - An evaluation of the ARIMA forecast. If the forecast appears flat, explain possible reasons.
     - Your confidence level in the forecast.
-    - Market recommendations, including risk management strategies.
-    
-    Format your analysis with clear headings and bullet points where appropriate.
+    - Specific market recommendations, including risk management strategies.
+
+    Format your analysis with clear headings and bullet points.
     """
     try:
         response = openai.ChatCompletion.create(
