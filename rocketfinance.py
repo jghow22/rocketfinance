@@ -92,7 +92,7 @@ def fetch_data(symbol, timeframe):
     Fetch historical data for a stock symbol.
     First try using yf.download with a period parameter.
     If that returns empty, try explicit start/end dates.
-    If still empty, always return generated dummy data.
+    If still empty, generate dummy data.
     """
     period_mapping = {"1mo": "1mo", "3mo": "3mo", "1yr": "1y"}
     period = period_mapping.get(timeframe, "1mo")
@@ -172,31 +172,12 @@ def fetch_news(symbol):
     return news
 
 def refine_predictions_with_openai(symbol, lstm_pred, arima_pred, history):
-    """Enhance stock predictions using OpenAI's API."""
-    history_tail = history['Close'].tail(30).tolist()
-    prompt = f"""
-    Given the following stock data for {symbol.upper()}, analyze trends and refine the LSTM and ARIMA predictions.
-    
-    - Historical Closing Prices (last 30 days): {history_tail}
-    - LSTM Prediction: {lstm_pred}
-    - ARIMA Prediction: {arima_pred}
-
-    Provide a more accurate stock movement prediction along with confidence levels.
     """
-    try:
-        response = openai.ChatCompletion.create(
-            model="gpt-4-turbo",
-            messages=[
-                {"role": "system", "content": "You are a stock market AI assistant."},
-                {"role": "user", "content": prompt}
-            ],
-            timeout=10
-        )
-        refined_prediction = response["choices"][0]["message"]["content"]
-        return refined_prediction
-    except Exception as e:
-        print(f"OpenAI API error: {e}")
-        return "Error in refining prediction."
+    (Temporary dummy implementation for testing)
+    Instead of calling the OpenAI API, return a dummy prediction.
+    """
+    print(f"Skipping real OpenAI call for {symbol}; returning dummy prediction.")
+    return "Stock looks good. Confidence: 80%."
 
 # ---------------------------
 # Flask Routes
