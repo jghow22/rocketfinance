@@ -1,7 +1,7 @@
 import os
+import requests
 import openai
 import pandas as pd
-import yfinance as yf
 from flask import Flask, jsonify, request
 from flask_cors import CORS
 import matplotlib.pyplot as plt
@@ -15,19 +15,75 @@ import numpy as np
 # Suppress TensorFlow INFO and WARNING logs
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
 
-# Set a modern user agent for yfinance requests
-os.environ["YAHOO_USER_AGENT"] = (
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-    "AppleWebKit/537.36 (KHTML, like Gecko) "
-    "Chrome/108.0.0.0 Safari/537.36"
-)
-
 # Initialize Flask App with static folder (Flask serves static files automatically)
 app = Flask(__name__, static_folder="static")
 CORS(app, resources={r"/*": {"origins": "*"}})
 
 # Set OpenAI API Key from environment variables
 openai.api_key = os.getenv("OPENAI_API_KEY")
+
+# ---------------------------
+# Data Fetching using Alpha Vantage
+# ---------------------------
+def fetch_data(symbol, timeframe):
+    """
+    Fetch historical daily adjusted stock data for a symbol from Alpha Vantage.
+    Uses outputsize "compact" (last 100 days) for 1mo/3mo and "full" for 1yr.
+    Filters the data to the requested timeframe.
+    """
+    api_key = os.getenv("ALPHAVANTAGE_API_KEY")
+    if not api_key:
+        raise ValueError("Alpha Vantage API key not set in environment variable ALPHAVANTAGE_API_KEY")
+        
+    outputsize = "compact"  # compact returns ~100 data points
+    if timeframe == "1yr":
+        outputsize = "full"  # full returns up to 20 years of daily data
+    
+    url = "https://www.alphavantage.co/query"
+    params = {
+        "function": "TIME_SERIES_DAILY_ADJUSTED",
+        "symbol": symbol,
+        "apikey": api_key,
+        "outputsize": outputsize,
+        "datatype": "json"
+    }
+    print(f"Fetching data for {symbol} from Alpha Vantage with outputsize {outputsize}")
+    response = requests.get(url, params=params)
+    if response.status_code != 200:
+        raise ValueError(f"Alpha Vantage API request failed with status code {response.status_code}")
+    
+    data_json = response.json()
+    if "Error Message" in data_json:
+        raise ValueError(f"Alpha Vantage API error: {data_json['Error Message']}")
+    if "Time Series (Daily)" not in data_json:
+        raise ValueError("Alpha Vantage API response missing 'Time Series (Daily)'")
+    
+    ts_data = data_json["Time Series (Daily)"]
+    df = pd.DataFrame.from_dict(ts_data, orient="index")
+    df.index = pd.to_datetime(df.index)
+    df.sort_index(inplace=True)
+    # Rename the adjusted close column to "Close"
+    df = df.rename(columns={"5. adjusted close": "Close"})
+    df["Close"] = df["Close"].astype(float)
+    
+    # Filter the DataFrame to the requested timeframe
+    now = datetime.now()
+    if timeframe == "1mo":
+        start_date = now - timedelta(days=30)
+    elif timeframe == "3mo":
+        start_date = now - timedelta(days=90)
+    elif timeframe == "1yr":
+        start_date = now - timedelta(days=365)
+    else:
+        start_date = now - timedelta(days=30)
+    df = df[df.index >= start_date]
+    if df.empty:
+        raise ValueError(f"No data found for symbol: {symbol} in the specified timeframe")
+    if df.index.tz is None:
+        df.index = df.index.tz_localize("UTC")
+    
+    print(f"Fetched {len(df)} rows of data for {symbol} from Alpha Vantage")
+    return df
 
 # ---------------------------
 # Model Handler Functions
@@ -64,7 +120,6 @@ def lstm_prediction(model, data):
         if len(scaled_data) < 10:
             print("Not enough data for LSTM prediction")
             return []
-        # Use the last 10 data points as input for the LSTM model
         input_sequence = scaled_data[-10:]
         input_sequence = input_sequence.reshape(1, 10, 1)
         prediction = model.predict(input_sequence)
@@ -85,69 +140,8 @@ lstm_model = create_lstm_model()
 cache = {}
 
 # ---------------------------
-# Helper Functions
+# Other Helper Functions
 # ---------------------------
-def fetch_data(symbol, timeframe):
-    """
-    Fetch historical data for a stock symbol.
-    First try using yf.download with a period parameter.
-    If that returns empty, try explicit start/end dates.
-    If still empty, generate dummy data.
-    """
-    period_mapping = {"1mo": "1mo", "3mo": "3mo", "1yr": "1y"}
-    period = period_mapping.get(timeframe, "1mo")
-    now = datetime.now()
-    data = None
-
-    # Try period method
-    try:
-        print(f"Attempting to fetch data for {symbol} with period={period}")
-        data = yf.download(symbol, period=period, interval="1d", progress=False)
-        if not data.empty:
-            if data.index.tz is None:
-                data.index = data.index.tz_localize("UTC")
-            print(f"Fetched {len(data)} rows using period method.")
-            return data
-        else:
-            print("Period method returned empty data.")
-    except Exception as e:
-        print(f"Error using period method for {symbol}: {e}")
-
-    # Try explicit start/end dates
-    try:
-        if timeframe == "1mo":
-            start = now - timedelta(days=30)
-        elif timeframe == "3mo":
-            start = now - timedelta(days=90)
-        elif timeframe == "1yr":
-            start = now - timedelta(days=365)
-        else:
-            start = now - timedelta(days=30)
-        print(f"Fetching data for {symbol} from {start.strftime('%Y-%m-%d')} to {now.strftime('%Y-%m-%d')}")
-        data = yf.download(symbol,
-                           start=start.strftime("%Y-%m-%d"),
-                           end=now.strftime("%Y-%m-%d"),
-                           interval="1d",
-                           progress=False)
-        if not data.empty:
-            if data.index.tz is None:
-                data.index = data.index.tz_localize("UTC")
-            print(f"Fetched {len(data)} rows using explicit dates.")
-            return data
-        else:
-            print("Explicit dates method returned empty data.")
-    except Exception as e:
-        print(f"Error using explicit dates for {symbol}: {e}")
-
-    # Fallback: generate dummy data
-    print(f"Using dummy data fallback for {symbol}")
-    dates = pd.date_range(end=now, periods=22, freq='B')
-    dummy_close = np.linspace(150, 160, num=len(dates))
-    dummy_data = pd.DataFrame({'Close': dummy_close}, index=dates)
-    dummy_data.index = dummy_data.index.tz_localize("UTC")
-    print(f"Generated {len(dummy_data)} rows of dummy data for {symbol}")
-    return dummy_data
-
 def generate_chart(data, symbol):
     """Generate a chart of the closing prices and save it in the static folder."""
     os.makedirs("static", exist_ok=True)
