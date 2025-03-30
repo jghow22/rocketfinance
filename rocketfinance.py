@@ -5,20 +5,18 @@ import pandas as pd
 from flask import Flask, jsonify, request
 from flask_cors import CORS
 import matplotlib.pyplot as plt
-#from tensorflow.keras.models import Sequential
-#from tensorflow.keras.layers import Dense, LSTM, Input
 from statsmodels.tsa.arima.model import ARIMA
 from sklearn.preprocessing import StandardScaler
 from datetime import datetime, timedelta
 import numpy as np
 
-# For testing, we disable TensorFlow-based model predictions.
-TEST_MODE = True  # Set to False to re-enable ML predictions later
+# For testing purposes, we'll continue using dummy predictions.
+TEST_MODE = True  # Set to False when you want to enable real model predictions.
 
-# Suppress TensorFlow INFO and WARNING logs
+# Suppress TensorFlow logs (if using TensorFlow models later)
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
 
-# Set a modern user agent for Alpha Vantage (if needed)
+# Set a modern user agent (for Alpha Vantage, if needed)
 os.environ["YAHOO_USER_AGENT"] = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
     "AppleWebKit/537.36 (KHTML, like Gecko) "
@@ -39,13 +37,13 @@ def fetch_data(symbol, timeframe):
     """
     Fetch historical daily adjusted stock data for a symbol from Alpha Vantage.
     Uses "compact" outputsize for 1mo/3mo and "full" for 1yr.
-    If the expected key is missing, logs the full response and falls back to dummy data.
+    If the expected key is missing in the response, logs the full response and falls back to dummy data.
     """
     api_key = os.getenv("ALPHAVANTAGE_API_KEY")
     if not api_key:
         raise ValueError("Alpha Vantage API key not set in environment variable ALPHAVANTAGE_API_KEY")
         
-    outputsize = "compact"  # ~100 data points
+    outputsize = "compact"
     if timeframe == "1yr":
         outputsize = "full"
     
@@ -72,11 +70,10 @@ def fetch_data(symbol, timeframe):
     df = pd.DataFrame.from_dict(ts_data, orient="index")
     df.index = pd.to_datetime(df.index)
     df.sort_index(inplace=True)
-    # Rename the adjusted close column to "Close"
     df = df.rename(columns={"5. adjusted close": "Close"})
     df["Close"] = df["Close"].astype(float)
     
-    # Filter the DataFrame to the requested timeframe
+    # Filter the DataFrame to the requested timeframe.
     now = datetime.now()
     if timeframe == "1mo":
         start_date = now - timedelta(days=30)
@@ -114,7 +111,6 @@ if not TEST_MODE:
     from tensorflow.keras.layers import Dense, LSTM, Input
 
     def create_lstm_model():
-        """Recreate the LSTM model programmatically."""
         model = Sequential([
             Input(shape=(10, 1)),
             LSTM(units=50, return_sequences=True),
@@ -126,7 +122,6 @@ if not TEST_MODE:
         return model
 
     def create_arima_model(data):
-        """Recreate and fit the ARIMA model."""
         try:
             data = data.asfreq("D").ffill()
             model = ARIMA(data['Close'], order=(0, 1, 0))
@@ -138,7 +133,6 @@ if not TEST_MODE:
             return None
 
     def lstm_prediction(model, data):
-        """Make predictions using the LSTM model."""
         try:
             scaler = StandardScaler()
             scaled_data = scaler.fit_transform(data['Close'].values.reshape(-1, 1))
@@ -154,7 +148,6 @@ if not TEST_MODE:
             return []
 
     def arima_prediction(model):
-        """Make predictions using the ARIMA model."""
         try:
             return model.forecast(steps=5).tolist()
         except Exception as e:
@@ -163,16 +156,16 @@ if not TEST_MODE:
     
     lstm_model = create_lstm_model()
 else:
-    # In test mode, we'll bypass model predictions and return dummy values.
+    # In test mode, we return dummy predictions.
     def create_arima_model(data):
         print("Skipping ARIMA model creation (test mode).")
         return None
     def lstm_prediction(model, data):
         print("Skipping LSTM prediction (test mode).")
-        return [155]  # Dummy prediction
+        return [155]  # Dummy value
     def arima_prediction(model):
         print("Skipping ARIMA prediction (test mode).")
-        return [156, 157, 158, 159, 160]  # Dummy predictions
+        return [156, 157, 158, 159, 160]  # Dummy forecast
     lstm_model = None
 
 cache = {}
@@ -180,36 +173,65 @@ cache = {}
 # ---------------------------
 # Other Helper Functions
 # ---------------------------
-def generate_chart(data, symbol):
-    """Generate a chart of the closing prices and save it in the static folder."""
+def generate_chart(data, symbol, forecast=None):
+    """
+    Generate a chart of the historical closing prices and, if provided,
+    overlay the forecast as a line.
+    """
     os.makedirs("static", exist_ok=True)
     filename = f"chart_{symbol.upper()}.png"
     filepath = os.path.join("static", filename)
+    
     plt.figure(figsize=(10, 5))
-    plt.plot(data.index, data['Close'])
+    plt.plot(data.index, data['Close'], label="Historical")
+    
+    # If forecast values are provided, generate forecast dates and plot them.
+    if forecast and len(forecast) > 0:
+        last_date = data.index[-1]
+        # Create forecast dates: assume next consecutive days (or business days if desired)
+        forecast_dates = pd.date_range(start=last_date + timedelta(days=1), periods=len(forecast), freq='B')
+        plt.plot(forecast_dates, forecast, label="Forecast", linestyle="--", marker="o")
+    
     plt.title(f"{symbol.upper()} Closing Prices")
     plt.xlabel("Date")
     plt.ylabel("Close Price")
     plt.grid(True)
+    plt.legend()
     plt.savefig(filepath)
     plt.close()
     return filename
 
 def fetch_news(symbol):
-    """Return dummy news articles for the stock symbol."""
+    """
+    Return dummy news articles for the stock symbol,
+    each with a title, source, and a summary.
+    """
     news = [
-        {"title": f"{symbol.upper()} surges amid market optimism", "source": {"name": "Reuters"}},
-        {"title": f"{symbol.upper()} announces new product line", "source": {"name": "Bloomberg"}}
+        {
+            "title": f"{symbol.upper()} surges amid market optimism",
+            "source": {"name": "Reuters"},
+            "summary": "The stock experienced a significant surge today amid positive market sentiment and favorable earnings reports."
+        },
+        {
+            "title": f"{symbol.upper()} announces new product line",
+            "source": {"name": "Bloomberg"},
+            "summary": "In a recent press release, the company unveiled its latest product line, which is expected to boost revenue in the upcoming quarters."
+        }
     ]
     return news
 
 def refine_predictions_with_openai(symbol, lstm_pred, arima_pred, history):
     """
     (Temporary dummy implementation for testing)
-    Instead of calling the OpenAI API, return a dummy prediction.
+    Instead of calling the OpenAI API, return a detailed dummy prediction.
     """
     print(f"Skipping real OpenAI call for {symbol}; returning dummy prediction.")
-    return "Stock looks good. Confidence: 80%."
+    suggestion = (
+        f"After analyzing the historical trends and recent market data, our models indicate a positive outlook for {symbol.upper()}. "
+        f"The LSTM model forecasts a near-term price around {lstm_pred[0] if lstm_pred else 'N/A'}, while the ARIMA model suggests a gradual increase with forecasts of "
+        f"{', '.join(str(x) for x in arima_pred)}. We recommend a cautious buy strategy with a target price in the upper forecast range."
+    )
+    return suggestion
 
 # ---------------------------
 # Flask Routes
@@ -234,7 +256,8 @@ def process():
         lstm_pred = lstm_prediction(lstm_model, data)
         arima_pred = arima_prediction(arima_model_obj) if arima_model_obj is not None else []
         refined_prediction = refine_predictions_with_openai(symbol, lstm_pred, arima_pred, data)
-        chart_filename = generate_chart(data, symbol)
+        # Pass the ARIMA forecast to the chart function so it is overlaid.
+        chart_filename = generate_chart(data, symbol, forecast=arima_pred)
         news = fetch_news(symbol)
         response = {
             "lstm_prediction": lstm_pred,
