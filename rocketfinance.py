@@ -20,78 +20,101 @@ CORS(app, resources={r"/*": {"origins": "*"}})
 openai.api_key = os.getenv("OPENAI_API_KEY")
 
 # ---------------------------
-# Data Fetching using Alpha Vantage
+# Data Fetching from Alpha Vantage
 # ---------------------------
 def fetch_data(symbol, timeframe):
     """
-    Fetch historical daily stock data for a symbol from Alpha Vantage.
-    Uses the free TIME_SERIES_DAILY endpoint.
+    Fetch historical stock data for a symbol from Alpha Vantage.
+    If `timeframe` ends with "m" (e.g., "5m", "15m"), use the intraday endpoint.
+    Otherwise, use the daily endpoint.
     Raises an error if the expected data is missing.
     """
     api_key = os.getenv("ALPHAVANTAGE_API_KEY")
     if not api_key:
         raise ValueError("Alpha Vantage API key not set in environment variable ALPHAVANTAGE_API_KEY")
-        
-    outputsize = "compact"  # ~100 data points
-    if timeframe == "1yr":
-        outputsize = "full"
-    
+
+    # Check if the timeframe is intraday based on its format (ends with "m")
+    if timeframe.endswith("m"):
+        # Intraday mode
+        interval = timeframe.replace("m", "min")  # e.g., "5m" becomes "5min"
+        function = "TIME_SERIES_INTRADAY"
+        params = {
+            "function": function,
+            "symbol": symbol,
+            "apikey": api_key,
+            "interval": interval,
+            "outputsize": "compact",  # or "full" if you need more data
+            "datatype": "json"
+        }
+        expected_key = f"Time Series ({interval})"
+        print(f"Fetching intraday data for {symbol} with interval {interval}")
+    else:
+        # Daily mode
+        function = "TIME_SERIES_DAILY"
+        outputsize = "compact"
+        if timeframe == "1yr":
+            outputsize = "full"
+        params = {
+            "function": function,
+            "symbol": symbol,
+            "apikey": api_key,
+            "outputsize": outputsize,
+            "datatype": "json"
+        }
+        expected_key = "Time Series (Daily)"
+        print(f"Fetching daily data for {symbol} with outputsize {outputsize}")
+
     url = "https://www.alphavantage.co/query"
-    params = {
-        "function": "TIME_SERIES_DAILY",
-        "symbol": symbol,
-        "apikey": api_key,
-        "outputsize": outputsize,
-        "datatype": "json"
-    }
-    print(f"Fetching data for {symbol} from Alpha Vantage with outputsize {outputsize}")
     response = requests.get(url, params=params)
     if response.status_code != 200:
         raise ValueError(f"Alpha Vantage API request failed with status code {response.status_code}")
-    
+
     data_json = response.json()
-    if "Time Series (Daily)" not in data_json:
+    if expected_key not in data_json:
         print("Alpha Vantage API response:", data_json)
-        raise ValueError("Alpha Vantage API response missing 'Time Series (Daily)'")
-    
-    ts_data = data_json["Time Series (Daily)"]
+        raise ValueError("Alpha Vantage API response missing expected key: " + expected_key)
+
+    ts_data = data_json[expected_key]
     df = pd.DataFrame.from_dict(ts_data, orient="index")
     df.index = pd.to_datetime(df.index)
     df.sort_index(inplace=True)
-    # Use the closing price from "4. close"
+    
+    # For daily, use "4. close"; for intraday, use "4. close" too (most endpoints use similar keys)
     df = df.rename(columns={"4. close": "Close"})
     df["Close"] = df["Close"].astype(float)
     
-    # Filter the DataFrame to the requested timeframe
-    now = datetime.now()
-    if timeframe == "1mo":
-        start_date = now - timedelta(days=30)
-    elif timeframe == "3mo":
-        start_date = now - timedelta(days=90)
-    elif timeframe == "1yr":
-        start_date = now - timedelta(days=365)
-    else:
-        start_date = now - timedelta(days=30)
-    df = df[df.index >= start_date]
-    if df.empty:
-        raise ValueError(f"No data found for symbol: {symbol} in the specified timeframe")
+    if not timeframe.endswith("m"):
+        # For daily mode, filter by requested timeframe
+        now = datetime.now()
+        if timeframe == "1mo":
+            start_date = now - timedelta(days=30)
+        elif timeframe == "3mo":
+            start_date = now - timedelta(days=90)
+        elif timeframe == "1yr":
+            start_date = now - timedelta(days=365)
+        else:
+            start_date = now - timedelta(days=30)
+        df = df[df.index >= start_date]
+        if df.empty:
+            raise ValueError(f"No data found for symbol: {symbol} in the specified timeframe")
+    
     if df.index.tz is None:
         df.index = df.index.tz_localize("UTC")
     
-    print(f"Fetched {len(df)} rows of data for {symbol} from Alpha Vantage")
+    print(f"Fetched {len(df)} rows of data for {symbol}")
     return df
 
 # ---------------------------
-# Model Handler Functions (ARIMA with time trend)
+# Model Handler Functions (ARIMA)
 # ---------------------------
 def create_arima_model(data):
     """
     Create and fit an ARIMA model on the 'Close' price.
-    Using ARIMA(0,1,1) with a time trend (trend='t') to capture a linear trend after differencing.
+    Using ARIMA(0,1,1) with a constant (trend='c') to capture drift.
     """
     try:
         data = data.asfreq("D").ffill()
-        model = ARIMA(data["Close"], order=(0, 1, 1), trend="t")
+        model = ARIMA(data["Close"], order=(0, 1, 1), trend="c")
         model_fit = model.fit()
         print("ARIMA model created and fitted successfully.")
         print(f"Model parameters: {model_fit.params}")
