@@ -20,36 +20,66 @@ CORS(app, resources={r"/*": {"origins": "*"}})
 openai.api_key = os.getenv("OPENAI_API_KEY")
 
 # ---------------------------
-# Data Fetching from Alpha Vantage
+# Data Fetching using Alpha Vantage
 # ---------------------------
 def fetch_data(symbol, timeframe):
     """
-    Fetch historical stock data for a symbol from Alpha Vantage.
-    If `timeframe` ends with "m" (e.g., "5m", "15m"), use the intraday endpoint.
-    Otherwise, use the daily endpoint.
-    Raises an error if the expected data is missing.
+    Fetch stock data from Alpha Vantage.
+    
+    For intraday timeframes ("5min", "30min", "2h", "4h"), use TIME_SERIES_INTRADAY.
+    - "5min" and "30min": fetch using those intervals.
+    - "2h" and "4h": fetch using "60min" data then resample.
+    
+    For daily timeframes ("1day", "7day", "1mo", "3mo", "1yr"), use TIME_SERIES_DAILY and filter by date.
     """
     api_key = os.getenv("ALPHAVANTAGE_API_KEY")
     if not api_key:
         raise ValueError("Alpha Vantage API key not set in environment variable ALPHAVANTAGE_API_KEY")
-
-    # Check if the timeframe is intraday based on its format (ends with "m")
-    if timeframe.endswith("m"):
-        # Intraday mode
-        interval = timeframe.replace("m", "min")  # e.g., "5m" becomes "5min"
+    
+    # Define which timeframes are intraday
+    intraday_timeframes = ["5min", "30min", "2h", "4h"]
+    
+    if timeframe in intraday_timeframes:
+        # For "2h" and "4h", we fetch 60min data and then resample.
+        if timeframe in ["2h", "4h"]:
+            base_interval = "60min"
+        else:
+            base_interval = timeframe  # "5min" or "30min"
         function = "TIME_SERIES_INTRADAY"
         params = {
             "function": function,
             "symbol": symbol,
             "apikey": api_key,
-            "interval": interval,
-            "outputsize": "compact",  # or "full" if you need more data
+            "interval": base_interval,
+            "outputsize": "compact",
             "datatype": "json"
         }
-        expected_key = f"Time Series ({interval})"
-        print(f"Fetching intraday data for {symbol} with interval {interval}")
+        expected_key = f"Time Series ({base_interval})"
+        print(f"Fetching intraday data for {symbol} with interval {base_interval}")
+        response = requests.get("https://www.alphavantage.co/query", params=params)
+        if response.status_code != 200:
+            raise ValueError(f"Alpha Vantage API request failed with status code {response.status_code}")
+        data_json = response.json()
+        if expected_key not in data_json:
+            print("Alpha Vantage API response:", data_json)
+            raise ValueError(f"Alpha Vantage API response missing expected key: {expected_key}")
+        ts_data = data_json[expected_key]
+        df = pd.DataFrame.from_dict(ts_data, orient="index")
+        df.index = pd.to_datetime(df.index)
+        df.sort_index(inplace=True)
+        # Use "4. close" as the closing price for intraday data too
+        df = df.rename(columns={"4. close": "Close"})
+        df["Close"] = df["Close"].astype(float)
+        if df.index.tz is None:
+            df.index = df.index.tz_localize("UTC")
+        # For "2h" and "4h", resample the data
+        if timeframe in ["2h", "4h"]:
+            freq = "2H" if timeframe == "2h" else "4H"
+            df = df["Close"].resample(freq).mean().dropna().to_frame()
+            print(f"Resampled data to {freq} frequency, resulting in {len(df)} rows.")
+        return df
     else:
-        # Daily mode
+        # Daily data
         function = "TIME_SERIES_DAILY"
         outputsize = "compact"
         if timeframe == "1yr":
@@ -63,30 +93,27 @@ def fetch_data(symbol, timeframe):
         }
         expected_key = "Time Series (Daily)"
         print(f"Fetching daily data for {symbol} with outputsize {outputsize}")
-
-    url = "https://www.alphavantage.co/query"
-    response = requests.get(url, params=params)
-    if response.status_code != 200:
-        raise ValueError(f"Alpha Vantage API request failed with status code {response.status_code}")
-
-    data_json = response.json()
-    if expected_key not in data_json:
-        print("Alpha Vantage API response:", data_json)
-        raise ValueError("Alpha Vantage API response missing expected key: " + expected_key)
-
-    ts_data = data_json[expected_key]
-    df = pd.DataFrame.from_dict(ts_data, orient="index")
-    df.index = pd.to_datetime(df.index)
-    df.sort_index(inplace=True)
-    
-    # For daily, use "4. close"; for intraday, use "4. close" too (most endpoints use similar keys)
-    df = df.rename(columns={"4. close": "Close"})
-    df["Close"] = df["Close"].astype(float)
-    
-    if not timeframe.endswith("m"):
-        # For daily mode, filter by requested timeframe
+        response = requests.get("https://www.alphavantage.co/query", params=params)
+        if response.status_code != 200:
+            raise ValueError(f"Alpha Vantage API request failed with status code {response.status_code}")
+        data_json = response.json()
+        if expected_key not in data_json:
+            print("Alpha Vantage API response:", data_json)
+            raise ValueError("Alpha Vantage API response missing 'Time Series (Daily)'")
+        ts_data = data_json[expected_key]
+        df = pd.DataFrame.from_dict(ts_data, orient="index")
+        df.index = pd.to_datetime(df.index)
+        df.sort_index(inplace=True)
+        df = df.rename(columns={"4. close": "Close"})
+        df["Close"] = df["Close"].astype(float)
+        
+        # Define date ranges based on the timeframe
         now = datetime.now()
-        if timeframe == "1mo":
+        if timeframe == "1day":
+            start_date = now - timedelta(days=1)
+        elif timeframe == "7day":
+            start_date = now - timedelta(days=7)
+        elif timeframe == "1mo":
             start_date = now - timedelta(days=30)
         elif timeframe == "3mo":
             start_date = now - timedelta(days=90)
@@ -97,12 +124,9 @@ def fetch_data(symbol, timeframe):
         df = df[df.index >= start_date]
         if df.empty:
             raise ValueError(f"No data found for symbol: {symbol} in the specified timeframe")
-    
-    if df.index.tz is None:
-        df.index = df.index.tz_localize("UTC")
-    
-    print(f"Fetched {len(df)} rows of data for {symbol}")
-    return df
+        if df.index.tz is None:
+            df.index = df.index.tz_localize("UTC")
+        return df
 
 # ---------------------------
 # Model Handler Functions (ARIMA)
