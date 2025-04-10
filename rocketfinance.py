@@ -32,7 +32,7 @@ def fetch_data(symbol, timeframe):
     if not api_key:
         raise ValueError("Alpha Vantage API key not set in environment variable ALPHAVANTAGE_API_KEY")
         
-    outputsize = "compact"  # Approximately 100 data points
+    outputsize = "compact"  # ~100 data points
     if timeframe == "1yr":
         outputsize = "full"
     
@@ -82,16 +82,16 @@ def fetch_data(symbol, timeframe):
     return df
 
 # ---------------------------
-# Model Handler Functions (ARIMA)
+# Model Handler Functions (ARIMA with time trend)
 # ---------------------------
 def create_arima_model(data):
     """
     Create and fit an ARIMA model on the 'Close' price.
-    Using ARIMA(0, 1, 1) with a constant (trend='c') to capture drift.
+    Using ARIMA(0,1,1) with a time trend (trend='t') to capture a linear trend after differencing.
     """
     try:
         data = data.asfreq("D").ffill()
-        model = ARIMA(data["Close"], order=(0, 1, 1), trend="c")
+        model = ARIMA(data["Close"], order=(0, 1, 1), trend="t")
         model_fit = model.fit()
         print("ARIMA model created and fitted successfully.")
         print(f"Model parameters: {model_fit.params}")
@@ -150,14 +150,14 @@ def fetch_news(symbol):
         {
             "title": f"{symbol.upper()} surges amid market optimism",
             "source": {"name": "Reuters"},
-            "summary": ("The stock experienced a significant surge today as investors reacted to strong earnings and positive market sentiment. "
-                        "Analysts note that while volatility remains, there are signs of a potential rebound.")
+            "summary": ("The stock experienced a significant surge today as investors reacted to strong earnings "
+                        "and positive market sentiment. Analysts note that while volatility remains, there are signs of a potential rebound.")
         },
         {
             "title": f"{symbol.upper()} announces new product line",
             "source": {"name": "Bloomberg"},
-            "summary": ("In a recent press release, the company unveiled its latest product innovations, which are expected to drive future growth. "
-                        "Experts advise monitoring the market for sustained trends.")
+            "summary": ("In a recent press release, the company unveiled its latest product innovations, which are expected "
+                        "to drive future growth. Experts advise monitoring the market for sustained trends.")
         }
     ]
     return news
@@ -176,7 +176,7 @@ def refine_predictions_with_openai(symbol, lstm_pred, arima_pred, history):
 
     Provide a detailed analysis that includes:
     - Key observations on historical performance (e.g., highs, lows, volatility, trends).
-    - An evaluation of the ARIMA forecast, including possible reasons if the forecast appears flat.
+    - An evaluation of the ARIMA forecast, including any drift or trend changes.
     - A confidence level in the forecast.
     - Specific market recommendations, including risk management strategies.
 
