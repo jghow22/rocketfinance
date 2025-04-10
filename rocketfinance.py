@@ -32,7 +32,7 @@ def fetch_data(symbol, timeframe):
     if not api_key:
         raise ValueError("Alpha Vantage API key not set in environment variable ALPHAVANTAGE_API_KEY")
         
-    outputsize = "compact"  # ~100 data points
+    outputsize = "compact"  # Approximately 100 data points
     if timeframe == "1yr":
         outputsize = "full"
     
@@ -82,19 +82,19 @@ def fetch_data(symbol, timeframe):
     return df
 
 # ---------------------------
-# Model Handler Functions (ARIMA with drift)
+# Model Handler Functions (ARIMA)
 # ---------------------------
 def create_arima_model(data):
     """
     Create and fit an ARIMA model on the 'Close' price.
-    Using ARIMA(0, 1, 1) with a linear trend (trend='t') to allow a drift in the integrated model.
+    Using ARIMA(0, 1, 1) with a constant (trend='c') to capture drift.
     """
     try:
         data = data.asfreq("D").ffill()
-        model = ARIMA(data["Close"], order=(0, 1, 1), trend='t')
+        model = ARIMA(data["Close"], order=(0, 1, 1), trend="c")
         model_fit = model.fit()
         print("ARIMA model created and fitted successfully.")
-        print("Model parameters:", model_fit.params)
+        print(f"Model parameters: {model_fit.params}")
         return model_fit
     except Exception as e:
         print(f"Error in ARIMA model creation: {e}")
@@ -150,14 +150,14 @@ def fetch_news(symbol):
         {
             "title": f"{symbol.upper()} surges amid market optimism",
             "source": {"name": "Reuters"},
-            "summary": ("The stock experienced a significant surge today as investors reacted to strong earnings "
-                        "and positive market sentiment. Analysts note that while volatility remains, there are signs of a potential rebound.")
+            "summary": ("The stock experienced a significant surge today as investors reacted to strong earnings and positive market sentiment. "
+                        "Analysts note that while volatility remains, there are signs of a potential rebound.")
         },
         {
             "title": f"{symbol.upper()} announces new product line",
             "source": {"name": "Bloomberg"},
-            "summary": ("In a recent press release, the company unveiled its latest product innovations. Experts believe these developments "
-                        "may drive growth in upcoming quarters, although market conditions require careful monitoring.")
+            "summary": ("In a recent press release, the company unveiled its latest product innovations, which are expected to drive future growth. "
+                        "Experts advise monitoring the market for sustained trends.")
         }
     ]
     return news
@@ -165,7 +165,7 @@ def fetch_news(symbol):
 def refine_predictions_with_openai(symbol, lstm_pred, arima_pred, history):
     """
     Call the OpenAI API to provide a detailed analysis of the stock.
-    The analysis includes historical performance, evaluation of the ARIMA forecast, confidence level, and market recommendations.
+    The analysis includes historical performance, evaluation of the ARIMA forecast, a confidence level, and market recommendations.
     """
     history_tail = history["Close"].tail(30).tolist()
     prompt = f"""
@@ -176,11 +176,11 @@ def refine_predictions_with_openai(symbol, lstm_pred, arima_pred, history):
 
     Provide a detailed analysis that includes:
     - Key observations on historical performance (e.g., highs, lows, volatility, trends).
-    - An evaluation of the ARIMA forecast. Explain any observed drift or change in trend.
+    - An evaluation of the ARIMA forecast, including possible reasons if the forecast appears flat.
     - A confidence level in the forecast.
     - Specific market recommendations, including risk management strategies.
 
-    Format your analysis with clear headings and bullet points.
+    Format your response with clear headings and bullet points.
     """
     try:
         response = openai.ChatCompletion.create(
