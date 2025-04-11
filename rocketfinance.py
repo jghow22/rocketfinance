@@ -20,31 +20,32 @@ CORS(app, resources={r"/*": {"origins": "*"}})
 openai.api_key = os.getenv("OPENAI_API_KEY")
 
 # ---------------------------
-# Data Fetching using Alpha Vantage
+# Data Fetching
 # ---------------------------
 def fetch_data(symbol, timeframe):
     """
-    Fetch stock data from Alpha Vantage.
+    Fetch stock data for a symbol from Alpha Vantage.
     
-    For intraday timeframes ("5min", "30min", "2h", "4h"), use TIME_SERIES_INTRADAY.
-    - "5min" and "30min": fetch using those intervals.
-    - "2h" and "4h": fetch using "60min" data then resample.
+    If timeframe is intraday (5min, 30min, 2h, 4h):
+      - Uses TIME_SERIES_INTRADAY with the given interval.
+      - For "2h" and "4h", fetch 60min data and resample to 2-hour or 4-hour averages.
     
-    For daily timeframes ("1day", "7day", "1mo", "3mo", "1yr"), use TIME_SERIES_DAILY and filter by date.
+    Otherwise, for daily timeframes ("1day", "7day", "1mo", "3mo", "1yr"):
+      - Uses TIME_SERIES_DAILY endpoint and then filters rows by date.
     """
     api_key = os.getenv("ALPHAVANTAGE_API_KEY")
     if not api_key:
         raise ValueError("Alpha Vantage API key not set in environment variable ALPHAVANTAGE_API_KEY")
     
-    # Define which timeframes are intraday
-    intraday_timeframes = ["5min", "30min", "2h", "4h"]
+    intraday_options = ["5min", "30min", "2h", "4h"]
     
-    if timeframe in intraday_timeframes:
-        # For "2h" and "4h", we fetch 60min data and then resample.
+    if timeframe in intraday_options:
+        # Determine interval and whether to resample
         if timeframe in ["2h", "4h"]:
             base_interval = "60min"
         else:
             base_interval = timeframe  # "5min" or "30min"
+            
         function = "TIME_SERIES_INTRADAY"
         params = {
             "function": function,
@@ -67,19 +68,20 @@ def fetch_data(symbol, timeframe):
         df = pd.DataFrame.from_dict(ts_data, orient="index")
         df.index = pd.to_datetime(df.index)
         df.sort_index(inplace=True)
-        # Use "4. close" as the closing price for intraday data too
         df = df.rename(columns={"4. close": "Close"})
         df["Close"] = df["Close"].astype(float)
         if df.index.tz is None:
             df.index = df.index.tz_localize("UTC")
-        # For "2h" and "4h", resample the data
+            
+        # For "2h" and "4h", resample the 60min data into averages over 2 or 4 hours.
         if timeframe in ["2h", "4h"]:
             freq = "2H" if timeframe == "2h" else "4H"
             df = df["Close"].resample(freq).mean().dropna().to_frame()
-            print(f"Resampled data to {freq} frequency, resulting in {len(df)} rows.")
+            print(f"Resampled intraday data to {freq} frequency, resulting in {len(df)} rows.")
+        
         return df
     else:
-        # Daily data
+        # Daily data: use TIME_SERIES_DAILY endpoint.
         function = "TIME_SERIES_DAILY"
         outputsize = "compact"
         if timeframe == "1yr":
@@ -107,7 +109,7 @@ def fetch_data(symbol, timeframe):
         df = df.rename(columns={"4. close": "Close"})
         df["Close"] = df["Close"].astype(float)
         
-        # Define date ranges based on the timeframe
+        # Determine date range based on daily timeframe option
         now = datetime.now()
         if timeframe == "1day":
             start_date = now - timedelta(days=1)
@@ -129,12 +131,12 @@ def fetch_data(symbol, timeframe):
         return df
 
 # ---------------------------
-# Model Handler Functions (ARIMA)
+# Model Handler Functions (ARIMA for Daily Data)
 # ---------------------------
 def create_arima_model(data):
     """
     Create and fit an ARIMA model on the 'Close' price.
-    Using ARIMA(0,1,1) with a constant (trend='c') to capture drift.
+    For daily data, use ARIMA(0,1,1) with constant (trend='c') to capture drift.
     """
     try:
         data = data.asfreq("D").ffill()
@@ -264,14 +266,21 @@ def process():
     
     try:
         data = fetch_data(symbol, timeframe)
-        arima_model_obj = create_arima_model(data)
-        arima_pred = arima_prediction(arima_model_obj)
-        refined_prediction = refine_predictions_with_openai(symbol, "N/A", arima_pred, data)
-        chart_filename = generate_chart(data, symbol, forecast=arima_pred)
+        # For intraday timeframes, use a naive forecast.
+        intraday_options = ["5min", "30min", "2h", "4h"]
+        if timeframe in intraday_options:
+            last_value = data["Close"].iloc[-1]
+            forecast = [last_value] * 5  # Naive forecast for intraday data
+            print(f"Using naive intraday forecast: {forecast}")
+        else:
+            arima_model_obj = create_arima_model(data)
+            forecast = arima_prediction(arima_model_obj)
+        refined_prediction = refine_predictions_with_openai(symbol, "N/A", forecast, data)
+        chart_filename = generate_chart(data, symbol, forecast=forecast)
         news = fetch_news(symbol)
         
         response = {
-            "arima_prediction": arima_pred,
+            "arima_prediction": forecast,
             "openai_refined_prediction": refined_prediction,
             "chart_path": chart_filename,
             "news": news
