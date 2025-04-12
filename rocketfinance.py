@@ -9,6 +9,9 @@ from statsmodels.tsa.arima.model import ARIMA
 from datetime import datetime, timedelta
 import numpy as np
 
+# Global cache for responses
+cache = {}
+
 # Initialize Flask App with static folder
 app = Flask(__name__, static_folder="static")
 CORS(app, resources={r"/*": {"origins": "*"}})
@@ -39,7 +42,7 @@ def fetch_data(symbol, timeframe):
         if timeframe in ["2h", "4h"]:
             base_interval = "60min"
         else:
-            base_interval = timeframe  # "5min" or "30min"
+            base_interval = timeframe
         function = "TIME_SERIES_INTRADAY"
         params = {
             "function": function,
@@ -66,14 +69,12 @@ def fetch_data(symbol, timeframe):
         df["Close"] = df["Close"].astype(float)
         if df.index.tz is None:
             df.index = df.index.tz_localize("UTC")
-        # For "2h" and "4h", resample the 60min data
         if timeframe in ["2h", "4h"]:
             freq = "2H" if timeframe == "2h" else "4H"
             df = df["Close"].resample(freq).mean().dropna().to_frame()
             print(f"Resampled intraday data to {freq} frequency, resulting in {len(df)} rows.")
         return df
     else:
-        # Daily data
         function = "TIME_SERIES_DAILY"
         outputsize = "compact"
         if timeframe == "1yr":
@@ -100,7 +101,6 @@ def fetch_data(symbol, timeframe):
         df.sort_index(inplace=True)
         df = df.rename(columns={"4. close": "Close"})
         df["Close"] = df["Close"].astype(float)
-        
         now = datetime.now()
         if timeframe == "1day":
             start_date = now - timedelta(days=1)
@@ -122,23 +122,21 @@ def fetch_data(symbol, timeframe):
         return df
 
 # ---------------------------
-# Intraday Forecast using Polynomial Regression (Degree 2, adjusted for continuity)
+# Intraday Forecast using Polynomial Regression (Degree 2)
 # ---------------------------
 def linear_regression_forecast(data, periods=5, degree=2):
     """
-    Perform a polynomial regression (degree 2 by default) on intraday data to forecast the next 'periods' values.
-    Adjusts the forecast so that the first forecast point equals the last observed closing price.
+    Perform a degree 2 polynomial regression on intraday data to forecast the next 'periods' values.
+    Adjusts the forecast so the first forecast value equals the last observed value.
     """
     try:
         x = np.arange(len(data))
         y = data["Close"].values
         coeffs = np.polyfit(x, y, degree)
         poly = np.poly1d(coeffs)
-        # Forecast for next 'periods' points (starting at x = len(data))
         x_future = np.arange(len(data), len(data) + periods)
         forecast = poly(x_future)
-        # Force continuity: set first forecast value equal to last historical value
-        forecast[0] = y[-1]
+        forecast[0] = y[-1]  # Ensure continuity
         forecast = forecast.tolist()
         print(f"Polynomial regression forecast (degree={degree}): {forecast}")
         return forecast
@@ -182,8 +180,9 @@ def arima_prediction(model):
 # ---------------------------
 def generate_chart(data, symbol, forecast=None, timeframe="1mo"):
     """
-    Generate a modern-styled chart of historical closing prices.
-    If forecast is provided, overlay it with appropriate time intervals based on the selected timeframe.
+    Generate a chart of historical closing prices.
+    If forecast is provided, overlay it with appropriate time intervals based on the timeframe.
+    Applies a modern style.
     """
     os.makedirs("static", exist_ok=True)
     filename = f"chart_{symbol.upper()}.png"
@@ -243,8 +242,7 @@ def fetch_news(symbol):
 def refine_predictions_with_openai(symbol, lstm_pred, forecast, history):
     """
     Call the OpenAI API to provide a detailed analysis of the stock.
-    The analysis includes historical performance, evaluation of the forecast,
-    a confidence level, and market recommendations.
+    The analysis includes historical performance, evaluation of the forecast, confidence level, and market recommendations.
     """
     history_tail = history["Close"].tail(30).tolist()
     prompt = f"""
@@ -255,8 +253,8 @@ def refine_predictions_with_openai(symbol, lstm_pred, forecast, history):
 
     Provide a detailed analysis that includes:
     - Key observations on historical performance (e.g., highs, lows, volatility, trends).
-    - An evaluation of the forecast, including any drift or trend changes and why the forecast might show a defined direction.
-    - Your confidence level in the forecast.
+    - An evaluation of the forecast, including any observed drift or trend changes and reasons behind it.
+    - A confidence level in the forecast.
     - Specific market recommendations, including risk management strategies.
 
     Format your response with clear headings and bullet points.
@@ -285,13 +283,13 @@ def index():
 
 @app.route("/process", methods=["GET"])
 def process():
+    # Declare global cache if you wish to use it; here we are removing cache so each request is fresh.
     symbol = request.args.get("symbol", "AAPL")
     timeframe = request.args.get("timeframe", "1mo")
     print(f"Received request for symbol: {symbol} with timeframe: {timeframe}")
     
     try:
         data = fetch_data(symbol, timeframe)
-        # For intraday timeframes, use polynomial regression forecast.
         intraday_options = ["5min", "30min", "2h", "4h"]
         if timeframe in intraday_options:
             forecast = linear_regression_forecast(data, periods=5, degree=2)
@@ -309,7 +307,7 @@ def process():
             "chart_path": chart_filename,
             "news": news
         }
-        # Clear cache for this key so the system re-runs on each request.
+        # Remove cache entry for fresh processing each time
         cache.pop(f"{symbol.upper()}_{timeframe}", None)
         return jsonify(response)
     except Exception as e:
