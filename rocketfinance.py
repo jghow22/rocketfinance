@@ -9,7 +9,7 @@ from statsmodels.tsa.arima.model import ARIMA
 from datetime import datetime, timedelta
 import numpy as np
 
-# Global cache for responses (currently not used)
+# Global cache for responses (currently unused)
 cache = {}
 
 # Initialize Flask App with static folder
@@ -27,10 +27,10 @@ def fetch_data(symbol, timeframe):
     Fetch stock data for a symbol from Alpha Vantage.
 
     For intraday timeframes ("5min", "30min", "2h", "4h"), uses TIME_SERIES_INTRADAY.
-      - For "2h" and "4h", fetches "60min" data then resamples.
+      - For "2h" and "4h", fetches 60min data then resamples.
     
-    For daily timeframes ("1day", "7day", "1mo", "3mo", "1yr"), uses TIME_SERIES_DAILY 
-    and filters the data by date.
+    For daily timeframes ("1day", "7day", "1mo", "3mo", "1yr"), uses TIME_SERIES_DAILY
+    and filters the data by date using an extended window for very short timeframes.
     """
     api_key = os.getenv("ALPHAVANTAGE_API_KEY")
     if not api_key:
@@ -102,10 +102,11 @@ def fetch_data(symbol, timeframe):
         df = df.rename(columns={"4. close": "Close"})
         df["Close"] = df["Close"].astype(float)
         now = datetime.now()
+        # Use extended windows for very short daily timeframes:
         if timeframe == "1day":
-            start_date = now - timedelta(days=1)
+            start_date = now - timedelta(days=2)
         elif timeframe == "7day":
-            start_date = now - timedelta(days=7)
+            start_date = now - timedelta(days=10)
         elif timeframe == "1mo":
             start_date = now - timedelta(days=30)
         elif timeframe == "3mo":
@@ -127,7 +128,7 @@ def fetch_data(symbol, timeframe):
 def linear_regression_forecast(data, periods=5, degree=2):
     """
     Perform a degree-2 polynomial regression on intraday data to forecast the next 'periods' values.
-    Forces the first forecast value to equal the last observed closing price for continuity.
+    The forecast's first value is forced to equal the last observed closing price for continuity.
     """
     try:
         x = np.arange(len(data))
@@ -193,7 +194,7 @@ def get_chart_data(data, forecast, timeframe):
         delta = timedelta(hours=hours)
         forecast_dates = [(last_date + delta * (i + 1)).strftime("%Y-%m-%dT%H:%M:%SZ") for i in range(len(forecast))]
     else:
-        forecast_dates = pd.date_range(start=last_date + timedelta(days=1), periods=len(forecast), freq="B") \
+        forecast_dates = pd.date_range(start=last_date + timedelta(days=1), periods=len(forecast), freq="B")\
                             .strftime("%Y-%m-%dT%H:%M:%SZ").tolist()
     return {
         "historicalDates": historical_dates,
@@ -208,7 +209,7 @@ def get_chart_data(data, forecast, timeframe):
 def generate_chart(data, symbol, forecast=None, timeframe="1mo"):
     """
     Generate a chart of historical closing prices using matplotlib with a modern style.
-    If forecast data is provided, overlay it with appropriate timestamps based on the timeframe.
+    If forecast is provided, overlay it with appropriate timestamps based on the timeframe.
     """
     os.makedirs("static", exist_ok=True)
     filename = f"chart_{symbol.upper()}.png"
@@ -335,7 +336,7 @@ def process():
             "chartData": { "symbol": symbol.upper(), **chart_data },
             "news": news
         }
-        # Clear cache entry if used
+        # Clear cached entry if used.
         cache.pop(f"{symbol.upper()}_{timeframe}", None)
         return jsonify(response)
     except Exception as e:
