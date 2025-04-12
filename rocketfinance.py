@@ -9,7 +9,7 @@ from statsmodels.tsa.arima.model import ARIMA
 from datetime import datetime, timedelta
 import numpy as np
 
-# Global cache for responses (currently unused)
+# Global cache for responses (currently not used)
 cache = {}
 
 # Initialize Flask App with static folder
@@ -25,12 +25,12 @@ openai.api_key = os.getenv("OPENAI_API_KEY")
 def fetch_data(symbol, timeframe):
     """
     Fetch stock data for a symbol from Alpha Vantage.
-
-    For intraday timeframes ("5min", "30min", "2h", "4h"), uses TIME_SERIES_INTRADAY.
-      - For "2h" and "4h", fetches 60min data then resamples.
     
-    For daily timeframes ("1day", "7day", "1mo", "3mo", "1yr"), uses TIME_SERIES_DAILY
-    and filters the data by date using an extended window for very short timeframes.
+    For intraday timeframes ("5min", "30min", "2h", "4h"), uses TIME_SERIES_INTRADAY.
+      - For "2h" and "4h", fetches "60min" data then resamples.
+    
+    For daily timeframes ("1day", "7day", "1mo", "3mo", "1yr"), uses TIME_SERIES_DAILY 
+    and filters the data by date. For very short daily timeframes, an extended window is used.
     """
     api_key = os.getenv("ALPHAVANTAGE_API_KEY")
     if not api_key:
@@ -75,6 +75,7 @@ def fetch_data(symbol, timeframe):
             print(f"Resampled intraday data to {freq} frequency, resulting in {len(df)} rows.")
         return df
     else:
+        # Daily Data
         function = "TIME_SERIES_DAILY"
         outputsize = "compact"
         if timeframe == "1yr":
@@ -102,9 +103,8 @@ def fetch_data(symbol, timeframe):
         df = df.rename(columns={"4. close": "Close"})
         df["Close"] = df["Close"].astype(float)
         now = datetime.now()
-        # Use extended windows for very short daily timeframes:
         if timeframe == "1day":
-            start_date = now - timedelta(days=2)
+            start_date = now - timedelta(days=2)  # Extended window for "1day"
         elif timeframe == "7day":
             start_date = now - timedelta(days=10)
         elif timeframe == "1mo":
@@ -137,7 +137,7 @@ def linear_regression_forecast(data, periods=5, degree=2):
         poly = np.poly1d(coeffs)
         x_future = np.arange(len(data), len(data) + periods)
         forecast = poly(x_future)
-        forecast[0] = y[-1]
+        forecast[0] = y[-1]  # Force continuity
         forecast = forecast.tolist()
         print(f"Polynomial regression forecast (degree={degree}): {forecast}")
         return forecast
@@ -150,11 +150,12 @@ def linear_regression_forecast(data, periods=5, degree=2):
 # ---------------------------
 def create_arima_model(data):
     """
-    Create and fit an ARIMA model on the 'Close' price using ARIMA(0,1,1) with a constant (trend='c') for daily data.
+    Create and fit an ARIMA model on the 'Close' price using ARIMA(0,1,1) with a linear trend (trend='t')
+    for daily data.
     """
     try:
         data = data.asfreq("D").ffill()
-        model = ARIMA(data["Close"], order=(0, 1, 1), trend="c")
+        model = ARIMA(data["Close"], order=(0, 1, 1), trend="t")
         model_fit = model.fit()
         print("ARIMA model created and fitted successfully.")
         print(f"Model parameters: {model_fit.params}")
@@ -180,7 +181,7 @@ def arima_prediction(model):
 # ---------------------------
 def get_chart_data(data, forecast, timeframe):
     """
-    Build raw chart data arrays including ISO-formatted historical and forecast dates and corresponding values.
+    Build raw chart data arrays including ISO-formatted historical and forecast dates and values.
     """
     historical_dates = data.index.strftime("%Y-%m-%dT%H:%M:%SZ").tolist()
     historical_values = data["Close"].tolist()
@@ -209,7 +210,7 @@ def get_chart_data(data, forecast, timeframe):
 def generate_chart(data, symbol, forecast=None, timeframe="1mo"):
     """
     Generate a chart of historical closing prices using matplotlib with a modern style.
-    If forecast is provided, overlay it with appropriate timestamps based on the timeframe.
+    If forecast data is provided, overlay it with appropriate timestamps based on the selected timeframe.
     """
     os.makedirs("static", exist_ok=True)
     filename = f"chart_{symbol.upper()}.png"
@@ -270,7 +271,7 @@ def fetch_news(symbol):
 def refine_predictions_with_openai(symbol, lstm_pred, forecast, history):
     """
     Call the OpenAI API to provide a detailed analysis of the stock.
-    The analysis includes historical performance, evaluation of the forecast, a confidence level, and market recommendations.
+    The analysis includes historical performance, an evaluation of the forecast, a confidence level, and market recommendations.
     """
     history_tail = history["Close"].tail(30).tolist()
     prompt = f"""
@@ -336,7 +337,7 @@ def process():
             "chartData": { "symbol": symbol.upper(), **chart_data },
             "news": news
         }
-        # Clear cached entry if used.
+        # Clear cached entry if used
         cache.pop(f"{symbol.upper()}_{timeframe}", None)
         return jsonify(response)
     except Exception as e:
