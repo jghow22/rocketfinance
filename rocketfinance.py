@@ -9,9 +9,6 @@ from statsmodels.tsa.arima.model import ARIMA
 from datetime import datetime, timedelta
 import numpy as np
 
-# Global cache for responses (cleared on each run so we always process fresh data)
-cache = {}
-
 # Initialize Flask App with static folder
 app = Flask(__name__, static_folder="static")
 CORS(app, resources={r"/*": {"origins": "*"}})
@@ -20,17 +17,16 @@ CORS(app, resources={r"/*": {"origins": "*"}})
 openai.api_key = os.getenv("OPENAI_API_KEY")
 
 # ---------------------------
-# Data Fetching using Alpha Vantage
+# Data Fetching from Alpha Vantage
 # ---------------------------
 def fetch_data(symbol, timeframe):
     """
     Fetch stock data for a symbol from Alpha Vantage.
-    
+
     For intraday timeframes ("5min", "30min", "2h", "4h"), uses TIME_SERIES_INTRADAY.
-      - For "2h" and "4h", fetches 60min data and then resamples.
+      - For "2h" and "4h", fetches "60min" data then resamples.
     
-    For daily timeframes ("1day", "7day", "1mo", "3mo", "1yr"), uses TIME_SERIES_DAILY 
-    and filters the data by date.
+    For daily timeframes ("1day", "7day", "1mo", "3mo", "1yr"), uses TIME_SERIES_DAILY and filters by date.
     """
     api_key = os.getenv("ALPHAVANTAGE_API_KEY")
     if not api_key:
@@ -42,7 +38,7 @@ def fetch_data(symbol, timeframe):
         if timeframe in ["2h", "4h"]:
             base_interval = "60min"
         else:
-            base_interval = timeframe  # "5min" or "30min"
+            base_interval = timeframe
         function = "TIME_SERIES_INTRADAY"
         params = {
             "function": function,
@@ -69,11 +65,11 @@ def fetch_data(symbol, timeframe):
         df["Close"] = df["Close"].astype(float)
         if df.index.tz is None:
             df.index = df.index.tz_localize("UTC")
-        # For "2h" and "4h", resample the 60min data into averages
+        # For "2h" and "4h", resample the 60min data into averages.
         if timeframe in ["2h", "4h"]:
             freq = "2H" if timeframe == "2h" else "4H"
             df = df["Close"].resample(freq).mean().dropna().to_frame()
-            print(f"Resampled data to {freq} frequency, resulting in {len(df)} rows.")
+            print(f"Resampled intraday data to {freq} frequency, resulting in {len(df)} rows.")
         return df
     else:
         # Daily data
@@ -124,12 +120,12 @@ def fetch_data(symbol, timeframe):
         return df
 
 # ---------------------------
-# Intraday Forecast using Polynomial Regression (Degree 2)
+# Intraday Forecast using Polynomial Regression (Degree 2, then adjusted for continuity)
 # ---------------------------
 def linear_regression_forecast(data, periods=5, degree=2):
     """
     Perform a degree-2 polynomial regression on intraday data to forecast the next 'periods' values.
-    Adjusts the forecast so that the first forecast value equals the last observed closing price.
+    Forces the first forecast point to equal the last historical closing value for continuity.
     """
     try:
         x = np.arange(len(data))
@@ -138,7 +134,7 @@ def linear_regression_forecast(data, periods=5, degree=2):
         poly = np.poly1d(coeffs)
         x_future = np.arange(len(data), len(data) + periods)
         forecast = poly(x_future)
-        forecast[0] = y[-1]
+        forecast[0] = y[-1]  # Ensure the forecast starts where the historical data ends
         forecast = forecast.tolist()
         print(f"Polynomial regression forecast (degree={degree}): {forecast}")
         return forecast
@@ -178,47 +174,36 @@ def arima_prediction(model):
         raise
 
 # ---------------------------
-# Chart Generation with Modern Styling
+# Build Raw Chart Data for Front-End
 # ---------------------------
-def generate_chart(data, symbol, forecast=None, timeframe="1mo"):
+def get_chart_data(data, forecast, timeframe):
     """
-    Generate a modern-styled chart of historical closing prices.
-    If forecast is provided, overlay it with appropriate timestamps based on the timeframe.
+    Build a dictionary with raw chart data arrays for the front-end chart.
+    The data includes historical dates/values and forecast dates/values.
     """
-    os.makedirs("static", exist_ok=True)
-    filename = f"chart_{symbol.upper()}.png"
-    filepath = os.path.join("static", filename)
-    
-    plt.style.use("seaborn-whitegrid")
-    plt.figure(figsize=(10, 5))
-    plt.plot(data.index, data["Close"], label="Historical", color="blue")
-    
-    if forecast and len(forecast) > 0:
-        last_date = data.index[-1]
-        if timeframe.endswith("min"):
-            minutes = int(timeframe.replace("min", ""))
-            delta = timedelta(minutes=minutes)
-            forecast_dates = [last_date + delta * (i + 1) for i in range(len(forecast))]
-        elif timeframe.endswith("h"):
-            hours = int(timeframe.replace("h", ""))
-            delta = timedelta(hours=hours)
-            forecast_dates = [last_date + delta * (i + 1) for i in range(len(forecast))]
-        else:
-            forecast_dates = pd.date_range(start=last_date + timedelta(days=1), periods=len(forecast), freq="B")
-        plt.plot(forecast_dates, forecast, label="Forecast", linestyle="--", marker="o", color="red", linewidth=2)
-    
-    plt.title(f"{symbol.upper()} Closing Prices")
-    plt.xlabel("Date")
-    plt.ylabel("Close Price")
-    plt.grid(True)
-    plt.legend()
-    plt.gcf().autofmt_xdate()
-    plt.savefig(filepath)
-    plt.close()
-    return filename
+    historical_dates = data.index.strftime("%Y-%m-%dT%H:%M:%SZ").tolist()
+    historical_values = data["Close"].tolist()
+    last_date = data.index[-1]
+    if timeframe.endswith("min"):
+        minutes = int(timeframe.replace("min", ""))
+        delta = timedelta(minutes=minutes)
+        forecast_dates = [(last_date + delta * (i + 1)).strftime("%Y-%m-%dT%H:%M:%SZ") for i in range(len(forecast))]
+    elif timeframe.endswith("h"):
+        hours = int(timeframe.replace("h", ""))
+        delta = timedelta(hours=hours)
+        forecast_dates = [(last_date + delta * (i + 1)).strftime("%Y-%m-%dT%H:%M:%SZ") for i in range(len(forecast))]
+    else:
+        forecast_dates = pd.date_range(start=last_date + timedelta(days=1), periods=len(forecast), freq="B")\
+                            .strftime("%Y-%m-%dT%H:%M:%SZ").tolist()
+    return {
+        "historicalDates": historical_dates,
+        "historicalValues": historical_values,
+        "forecastDates": forecast_dates,
+        "forecastValues": forecast
+    }
 
 # ---------------------------
-# News and AI Analysis Functions
+# News and OpenAI Analysis
 # ---------------------------
 def fetch_news(symbol):
     """
@@ -255,8 +240,8 @@ def refine_predictions_with_openai(symbol, lstm_pred, forecast, history):
 
     Provide a detailed analysis that includes:
     - Key observations on historical performance (e.g., highs, lows, volatility, trends).
-    - An evaluation of the forecast, including any drift or trend changes and why the forecast might be defined.
-    - Your confidence level in the forecast.
+    - An evaluation of the forecast, including any observed drift or trend changes and possible reasons.
+    - A confidence level in the forecast.
     - Specific market recommendations, including risk management strategies.
 
     Format your response with clear headings and bullet points.
@@ -300,15 +285,17 @@ def process():
         
         refined_prediction = refine_predictions_with_openai(symbol, "N/A", forecast, data)
         chart_filename = generate_chart(data, symbol, forecast=forecast, timeframe=timeframe)
+        chart_data = get_chart_data(data, forecast, timeframe)
         news = fetch_news(symbol)
         
         response = {
             "forecast": forecast,
             "openai_refined_prediction": refined_prediction,
             "chart_path": chart_filename,
+            "chartData": { "symbol": symbol.upper(), **chart_data },
             "news": news
         }
-        # Clear cache so each request is fresh
+        # Remove any cached entry for this symbol+timeframe to force fresh processing each time.
         cache.pop(f"{symbol.upper()}_{timeframe}", None)
         return jsonify(response)
     except Exception as e:
