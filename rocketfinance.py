@@ -9,10 +9,10 @@ from statsmodels.tsa.arima.model import ARIMA
 from datetime import datetime, timedelta
 import numpy as np
 
-# Global cache for responses (unused in final run)
+# Global cache for responses (currently not used)
 cache = {}
 
-# Initialize Flask App with a static folder
+# Initialize Flask App with static folder
 app = Flask(__name__, static_folder="static")
 CORS(app, resources={r"/*": {"origins": "*"}})
 
@@ -127,7 +127,7 @@ def fetch_data(symbol, timeframe):
 def linear_regression_forecast(data, periods=5, degree=2):
     """
     Perform a degree-2 polynomial regression on intraday data to forecast the next 'periods' values.
-    The forecast's first value is forced to equal the last historical closing price for continuity.
+    Forces the first forecast value to equal the last observed closing price for continuity.
     """
     try:
         x = np.arange(len(data))
@@ -136,7 +136,7 @@ def linear_regression_forecast(data, periods=5, degree=2):
         poly = np.poly1d(coeffs)
         x_future = np.arange(len(data), len(data) + periods)
         forecast = poly(x_future)
-        forecast[0] = y[-1]  # Ensure continuity
+        forecast[0] = y[-1]
         forecast = forecast.tolist()
         print(f"Polynomial regression forecast (degree={degree}): {forecast}")
         return forecast
@@ -179,8 +179,7 @@ def arima_prediction(model):
 # ---------------------------
 def get_chart_data(data, forecast, timeframe):
     """
-    Build raw chart data arrays for the front-end.
-    Includes historical dates/values and forecast dates/values (ISO formatted).
+    Build raw chart data arrays including ISO-formatted historical and forecast dates and corresponding values.
     """
     historical_dates = data.index.strftime("%Y-%m-%dT%H:%M:%SZ").tolist()
     historical_values = data["Close"].tolist()
@@ -194,7 +193,7 @@ def get_chart_data(data, forecast, timeframe):
         delta = timedelta(hours=hours)
         forecast_dates = [(last_date + delta * (i + 1)).strftime("%Y-%m-%dT%H:%M:%SZ") for i in range(len(forecast))]
     else:
-        forecast_dates = pd.date_range(start=last_date + timedelta(days=1), periods=len(forecast), freq="B")\
+        forecast_dates = pd.date_range(start=last_date + timedelta(days=1), periods=len(forecast), freq="B") \
                             .strftime("%Y-%m-%dT%H:%M:%SZ").tolist()
     return {
         "historicalDates": historical_dates,
@@ -208,8 +207,8 @@ def get_chart_data(data, forecast, timeframe):
 # ---------------------------
 def generate_chart(data, symbol, forecast=None, timeframe="1mo"):
     """
-    Generate a chart of historical closing prices with a modern style.
-    If forecast is provided, overlay it with appropriate timestamps based on the timeframe.
+    Generate a chart of historical closing prices using matplotlib with a modern style.
+    If forecast data is provided, overlay it with appropriate timestamps based on the timeframe.
     """
     os.makedirs("static", exist_ok=True)
     filename = f"chart_{symbol.upper()}.png"
@@ -241,10 +240,11 @@ def generate_chart(data, symbol, forecast=None, timeframe="1mo"):
     plt.gcf().autofmt_xdate()
     plt.savefig(filepath)
     plt.close()
+    print("Chart saved to", filepath)
     return filename
 
 # ---------------------------
-# News and OpenAI Analysis
+# News and OpenAI Analysis Functions
 # ---------------------------
 def fetch_news(symbol):
     """
@@ -269,7 +269,7 @@ def fetch_news(symbol):
 def refine_predictions_with_openai(symbol, lstm_pred, forecast, history):
     """
     Call the OpenAI API to provide a detailed analysis of the stock.
-    The analysis includes historical performance, an evaluation of the forecast, a confidence level, and market recommendations.
+    The analysis includes historical performance, evaluation of the forecast, a confidence level, and market recommendations.
     """
     history_tail = history["Close"].tail(30).tolist()
     prompt = f"""
@@ -335,7 +335,7 @@ def process():
             "chartData": { "symbol": symbol.upper(), **chart_data },
             "news": news
         }
-        # Remove the cached entry to force fresh processing (if caching is used).
+        # Clear cache entry if used
         cache.pop(f"{symbol.upper()}_{timeframe}", None)
         return jsonify(response)
     except Exception as e:
