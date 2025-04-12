@@ -9,7 +9,10 @@ from statsmodels.tsa.arima.model import ARIMA
 from datetime import datetime, timedelta
 import numpy as np
 
-# Initialize Flask App with static folder
+# Global cache for responses (unused in final run)
+cache = {}
+
+# Initialize Flask App with a static folder
 app = Flask(__name__, static_folder="static")
 CORS(app, resources={r"/*": {"origins": "*"}})
 
@@ -26,7 +29,8 @@ def fetch_data(symbol, timeframe):
     For intraday timeframes ("5min", "30min", "2h", "4h"), uses TIME_SERIES_INTRADAY.
       - For "2h" and "4h", fetches "60min" data then resamples.
     
-    For daily timeframes ("1day", "7day", "1mo", "3mo", "1yr"), uses TIME_SERIES_DAILY and filters by date.
+    For daily timeframes ("1day", "7day", "1mo", "3mo", "1yr"), uses TIME_SERIES_DAILY 
+    and filters the data by date.
     """
     api_key = os.getenv("ALPHAVANTAGE_API_KEY")
     if not api_key:
@@ -65,14 +69,12 @@ def fetch_data(symbol, timeframe):
         df["Close"] = df["Close"].astype(float)
         if df.index.tz is None:
             df.index = df.index.tz_localize("UTC")
-        # For "2h" and "4h", resample the 60min data into averages.
         if timeframe in ["2h", "4h"]:
             freq = "2H" if timeframe == "2h" else "4H"
             df = df["Close"].resample(freq).mean().dropna().to_frame()
             print(f"Resampled intraday data to {freq} frequency, resulting in {len(df)} rows.")
         return df
     else:
-        # Daily data
         function = "TIME_SERIES_DAILY"
         outputsize = "compact"
         if timeframe == "1yr":
@@ -120,12 +122,12 @@ def fetch_data(symbol, timeframe):
         return df
 
 # ---------------------------
-# Intraday Forecast using Polynomial Regression (Degree 2, then adjusted for continuity)
+# Intraday Forecast using Polynomial Regression (Degree 2)
 # ---------------------------
 def linear_regression_forecast(data, periods=5, degree=2):
     """
     Perform a degree-2 polynomial regression on intraday data to forecast the next 'periods' values.
-    Forces the first forecast point to equal the last historical closing value for continuity.
+    The forecast's first value is forced to equal the last historical closing price for continuity.
     """
     try:
         x = np.arange(len(data))
@@ -134,7 +136,7 @@ def linear_regression_forecast(data, periods=5, degree=2):
         poly = np.poly1d(coeffs)
         x_future = np.arange(len(data), len(data) + periods)
         forecast = poly(x_future)
-        forecast[0] = y[-1]  # Ensure the forecast starts where the historical data ends
+        forecast[0] = y[-1]  # Ensure continuity
         forecast = forecast.tolist()
         print(f"Polynomial regression forecast (degree={degree}): {forecast}")
         return forecast
@@ -147,8 +149,7 @@ def linear_regression_forecast(data, periods=5, degree=2):
 # ---------------------------
 def create_arima_model(data):
     """
-    Create and fit an ARIMA model on the 'Close' price.
-    Using ARIMA(0,1,1) with a constant (trend='c') for daily data.
+    Create and fit an ARIMA model on the 'Close' price using ARIMA(0,1,1) with a constant (trend='c') for daily data.
     """
     try:
         data = data.asfreq("D").ffill()
@@ -178,8 +179,8 @@ def arima_prediction(model):
 # ---------------------------
 def get_chart_data(data, forecast, timeframe):
     """
-    Build a dictionary with raw chart data arrays for the front-end chart.
-    The data includes historical dates/values and forecast dates/values.
+    Build raw chart data arrays for the front-end.
+    Includes historical dates/values and forecast dates/values (ISO formatted).
     """
     historical_dates = data.index.strftime("%Y-%m-%dT%H:%M:%SZ").tolist()
     historical_values = data["Close"].tolist()
@@ -201,6 +202,46 @@ def get_chart_data(data, forecast, timeframe):
         "forecastDates": forecast_dates,
         "forecastValues": forecast
     }
+
+# ---------------------------
+# Chart Generation with Modern Styling
+# ---------------------------
+def generate_chart(data, symbol, forecast=None, timeframe="1mo"):
+    """
+    Generate a chart of historical closing prices with a modern style.
+    If forecast is provided, overlay it with appropriate timestamps based on the timeframe.
+    """
+    os.makedirs("static", exist_ok=True)
+    filename = f"chart_{symbol.upper()}.png"
+    filepath = os.path.join("static", filename)
+    
+    plt.style.use("seaborn-whitegrid")
+    plt.figure(figsize=(10, 5))
+    plt.plot(data.index, data["Close"], label="Historical", color="blue")
+    
+    if forecast and len(forecast) > 0:
+        last_date = data.index[-1]
+        if timeframe.endswith("min"):
+            minutes = int(timeframe.replace("min", ""))
+            delta = timedelta(minutes=minutes)
+            forecast_dates = [last_date + delta * (i + 1) for i in range(len(forecast))]
+        elif timeframe.endswith("h"):
+            hours = int(timeframe.replace("h", ""))
+            delta = timedelta(hours=hours)
+            forecast_dates = [last_date + delta * (i + 1) for i in range(len(forecast))]
+        else:
+            forecast_dates = pd.date_range(start=last_date + timedelta(days=1), periods=len(forecast), freq="B")
+        plt.plot(forecast_dates, forecast, label="Forecast", linestyle="--", marker="o", color="red", linewidth=2)
+    
+    plt.title(f"{symbol.upper()} Closing Prices")
+    plt.xlabel("Date")
+    plt.ylabel("Close Price")
+    plt.grid(True)
+    plt.legend()
+    plt.gcf().autofmt_xdate()
+    plt.savefig(filepath)
+    plt.close()
+    return filename
 
 # ---------------------------
 # News and OpenAI Analysis
@@ -228,8 +269,7 @@ def fetch_news(symbol):
 def refine_predictions_with_openai(symbol, lstm_pred, forecast, history):
     """
     Call the OpenAI API to provide a detailed analysis of the stock.
-    The analysis includes historical performance, evaluation of the forecast,
-    a confidence level, and market recommendations.
+    The analysis includes historical performance, an evaluation of the forecast, a confidence level, and market recommendations.
     """
     history_tail = history["Close"].tail(30).tolist()
     prompt = f"""
@@ -241,7 +281,7 @@ def refine_predictions_with_openai(symbol, lstm_pred, forecast, history):
     Provide a detailed analysis that includes:
     - Key observations on historical performance (e.g., highs, lows, volatility, trends).
     - An evaluation of the forecast, including any observed drift or trend changes and possible reasons.
-    - A confidence level in the forecast.
+    - Your confidence level in the forecast.
     - Specific market recommendations, including risk management strategies.
 
     Format your response with clear headings and bullet points.
@@ -295,7 +335,7 @@ def process():
             "chartData": { "symbol": symbol.upper(), **chart_data },
             "news": news
         }
-        # Remove any cached entry for this symbol+timeframe to force fresh processing each time.
+        # Remove the cached entry to force fresh processing (if caching is used).
         cache.pop(f"{symbol.upper()}_{timeframe}", None)
         return jsonify(response)
     except Exception as e:
