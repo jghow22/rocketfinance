@@ -9,6 +9,9 @@ from statsmodels.tsa.arima.model import ARIMA
 from datetime import datetime, timedelta
 import numpy as np
 
+# Global cache for responses (we clear entries upon re-run)
+cache = {}
+
 # Initialize Flask App with static folder
 app = Flask(__name__, static_folder="static")
 CORS(app, resources={r"/*": {"origins": "*"}})
@@ -22,11 +25,12 @@ openai.api_key = os.getenv("OPENAI_API_KEY")
 def fetch_data(symbol, timeframe):
     """
     Fetch stock data for a symbol from Alpha Vantage.
-
-    For intraday timeframes ("5min", "30min", "2h", "4h"), uses TIME_SERIES_INTRADAY.
-      - For "2h" and "4h", fetches "60min" data and then resamples.
     
-    For daily timeframes ("1day", "7day", "1mo", "3mo", "1yr"), uses TIME_SERIES_DAILY.
+    For intraday timeframes (5min, 30min, 2h, 4h), uses TIME_SERIES_INTRADAY.
+      - For "2h" and "4h", fetches "60min" data then resamples.
+    
+    For daily timeframes (1day, 7day, 1mo, 3mo, 1yr), uses TIME_SERIES_DAILY 
+    and filters by date.
     """
     api_key = os.getenv("ALPHAVANTAGE_API_KEY")
     if not api_key:
@@ -35,11 +39,10 @@ def fetch_data(symbol, timeframe):
     intraday_options = ["5min", "30min", "2h", "4h"]
     
     if timeframe in intraday_options:
-        # For "2h" and "4h", fetch at "60min" resolution
         if timeframe in ["2h", "4h"]:
             base_interval = "60min"
         else:
-            base_interval = timeframe
+            base_interval = timeframe  # "5min" or "30min"
         function = "TIME_SERIES_INTRADAY"
         params = {
             "function": function,
@@ -66,7 +69,7 @@ def fetch_data(symbol, timeframe):
         df["Close"] = df["Close"].astype(float)
         if df.index.tz is None:
             df.index = df.index.tz_localize("UTC")
-        # For "2h" and "4h", resample the 60min data into averages
+        # For "2h" and "4h", resample the 60min data
         if timeframe in ["2h", "4h"]:
             freq = "2H" if timeframe == "2h" else "4H"
             df = df["Close"].resample(freq).mean().dropna().to_frame()
@@ -100,7 +103,7 @@ def fetch_data(symbol, timeframe):
         df.sort_index(inplace=True)
         df = df.rename(columns={"4. close": "Close"})
         df["Close"] = df["Close"].astype(float)
-        # Define date range based on timeframe
+        # Determine date range for daily data
         now = datetime.now()
         if timeframe == "1day":
             start_date = now - timedelta(days=1)
@@ -122,12 +125,33 @@ def fetch_data(symbol, timeframe):
         return df
 
 # ---------------------------
-# Model Handler Functions (ARIMA for Daily Data)
+# Intraday Forecast: Polynomial Regression
+# ---------------------------
+def linear_regression_forecast(data, periods=5, degree=2):
+    """
+    Perform a polynomial regression (degree 2) on intraday data 
+    using the row index as the independent variable to forecast the next 'periods' values.
+    """
+    try:
+        x = np.arange(len(data))
+        y = data["Close"].values
+        coeffs = np.polyfit(x, y, degree)
+        poly = np.poly1d(coeffs)
+        x_future = np.arange(len(data), len(data) + periods)
+        forecast = poly(x_future).tolist()
+        print(f"Polynomial regression forecast (degree={degree}): {forecast}")
+        return forecast
+    except Exception as e:
+        print(f"Error in polynomial regression forecast: {e}")
+        raise
+
+# ---------------------------
+# ARIMA Model for Daily Data
 # ---------------------------
 def create_arima_model(data):
     """
     Create and fit an ARIMA model on the 'Close' price.
-    Using ARIMA(0,1,1) with a constant (trend='c').
+    Using ARIMA(0,1,1) with a constant (trend='c') for daily data.
     """
     try:
         data = data.asfreq("D").ffill()
@@ -153,46 +177,39 @@ def arima_prediction(model):
         raise
 
 # ---------------------------
-# Intraday Forecast using Linear Regression
+# Chart Generation with Modern Look
 # ---------------------------
-def linear_regression_forecast(data, periods=5):
-    """
-    Perform a simple linear regression on intraday data to forecast the next 'periods' values.
-    Uses the row number as the independent variable.
-    """
-    try:
-        x = np.arange(len(data))
-        y = data["Close"].values
-        # Fit a first degree polynomial (linear regression)
-        coeffs = np.polyfit(x, y, 1)
-        slope, intercept = coeffs
-        print(f"Linear regression coefficients: slope={slope}, intercept={intercept}")
-        x_future = len(data) + np.arange(1, periods + 1)
-        forecast = np.polyval(coeffs, x_future).tolist()
-        print(f"Linear regression forecast: {forecast}")
-        return forecast
-    except Exception as e:
-        print(f"Error in linear regression forecast: {e}")
-        raise
-
-# ---------------------------
-# Other Helper Functions
-# ---------------------------
-def generate_chart(data, symbol, forecast=None):
+def generate_chart(data, symbol, forecast=None, timeframe="1mo"):
     """
     Generate a chart of historical closing prices.
-    If forecast is provided, overlay it as a red dashed line with markers.
+    If forecast is provided, overlay it with appropriate time intervals.
+    Applies a modern style.
     """
     os.makedirs("static", exist_ok=True)
     filename = f"chart_{symbol.upper()}.png"
     filepath = os.path.join("static", filename)
     
+    # Apply a modern style
+    plt.style.use("seaborn-whitegrid")
     plt.figure(figsize=(10, 5))
     plt.plot(data.index, data["Close"], label="Historical", color="blue")
     
     if forecast and len(forecast) > 0:
         last_date = data.index[-1]
-        forecast_dates = pd.date_range(start=last_date + timedelta(days=1), periods=len(forecast), freq="B")
+        # Determine forecast dates based on timeframe format
+        if timeframe.endswith("min"):
+            # Extract minutes from string, e.g., "5min" -> 5
+            minutes = int(timeframe.replace("min", ""))
+            delta = timedelta(minutes=minutes)
+            forecast_dates = [last_date + delta * (i + 1) for i in range(len(forecast))]
+        elif timeframe.endswith("h"):
+            # Extract hours from string, e.g., "2h" -> 2
+            hours = int(timeframe.replace("h", ""))
+            delta = timedelta(hours=hours)
+            forecast_dates = [last_date + delta * (i + 1) for i in range(len(forecast))]
+        else:
+            # For daily intervals use business days
+            forecast_dates = pd.date_range(start=last_date + timedelta(days=1), periods=len(forecast), freq="B")
         plt.plot(forecast_dates, forecast, label="Forecast", linestyle="--", marker="o", color="red", linewidth=2)
     
     plt.title(f"{symbol.upper()} Closing Prices")
@@ -205,6 +222,9 @@ def generate_chart(data, symbol, forecast=None):
     plt.close()
     return filename
 
+# ---------------------------
+# News and AI Analysis Functions
+# ---------------------------
 def fetch_news(symbol):
     """
     Return news articles for the symbol, each with a title, source, and summary.
@@ -225,7 +245,7 @@ def fetch_news(symbol):
     ]
     return news
 
-def refine_predictions_with_openai(symbol, lstm_pred, arima_pred, history):
+def refine_predictions_with_openai(symbol, lstm_pred, forecast, history):
     """
     Call the OpenAI API to provide a detailed analysis of the stock.
     The analysis includes historical performance, evaluation of the forecast,
@@ -236,12 +256,12 @@ def refine_predictions_with_openai(symbol, lstm_pred, arima_pred, history):
     Analyze the following stock data for {symbol.upper()}:
 
     Historical Closing Prices (last 30 days): {history_tail}
-    Forecast (next 5 periods): {arima_pred}
+    Forecast (next 5 periods): {forecast}
 
     Provide a detailed analysis that includes:
     - Key observations on historical performance (e.g., highs, lows, volatility, trends).
-    - An evaluation of the forecast, including any drift or trend changes.
-    - Your confidence level in the forecast.
+    - An evaluation of the forecast, including any drift or changes in trend.
+    - A confidence level in the forecast.
     - Specific market recommendations, including risk management strategies.
 
     Format your response with clear headings and bullet points.
@@ -276,16 +296,15 @@ def process():
     
     try:
         data = fetch_data(symbol, timeframe)
-        # For intraday data, if timeframe is in intraday options, use linear regression forecast.
         intraday_options = ["5min", "30min", "2h", "4h"]
         if timeframe in intraday_options:
-            forecast = linear_regression_forecast(data)
+            forecast = linear_regression_forecast(data, periods=5, degree=2)
         else:
             arima_model_obj = create_arima_model(data)
             forecast = arima_prediction(arima_model_obj)
         
         refined_prediction = refine_predictions_with_openai(symbol, "N/A", forecast, data)
-        chart_filename = generate_chart(data, symbol, forecast=forecast)
+        chart_filename = generate_chart(data, symbol, forecast=forecast, timeframe=timeframe)
         news = fetch_news(symbol)
         
         response = {
@@ -294,6 +313,8 @@ def process():
             "chart_path": chart_filename,
             "news": news
         }
+        # Remove cache entry to allow re-run without refreshing the page
+        cache.pop(f"{symbol.upper()}_{timeframe}", None)
         return jsonify(response)
     except Exception as e:
         print(f"Error processing request: {e}")
