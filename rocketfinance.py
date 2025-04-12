@@ -9,9 +9,6 @@ from statsmodels.tsa.arima.model import ARIMA
 from datetime import datetime, timedelta
 import numpy as np
 
-# Global cache for responses
-cache = {}
-
 # Initialize Flask App with static folder
 app = Flask(__name__, static_folder="static")
 CORS(app, resources={r"/*": {"origins": "*"}})
@@ -20,18 +17,16 @@ CORS(app, resources={r"/*": {"origins": "*"}})
 openai.api_key = os.getenv("OPENAI_API_KEY")
 
 # ---------------------------
-# Data Fetching
+# Data Fetching using Alpha Vantage
 # ---------------------------
 def fetch_data(symbol, timeframe):
     """
     Fetch stock data for a symbol from Alpha Vantage.
+
+    For intraday timeframes ("5min", "30min", "2h", "4h"), uses TIME_SERIES_INTRADAY.
+      - For "2h" and "4h", fetches "60min" data and then resamples.
     
-    If timeframe is intraday (5min, 30min, 2h, 4h):
-      - Uses TIME_SERIES_INTRADAY with the given interval.
-      - For "2h" and "4h", fetch 60min data and resample to 2-hour or 4-hour averages.
-    
-    Otherwise, for daily timeframes ("1day", "7day", "1mo", "3mo", "1yr"):
-      - Uses TIME_SERIES_DAILY endpoint and then filters rows by date.
+    For daily timeframes ("1day", "7day", "1mo", "3mo", "1yr"), uses TIME_SERIES_DAILY.
     """
     api_key = os.getenv("ALPHAVANTAGE_API_KEY")
     if not api_key:
@@ -40,12 +35,11 @@ def fetch_data(symbol, timeframe):
     intraday_options = ["5min", "30min", "2h", "4h"]
     
     if timeframe in intraday_options:
-        # Determine interval and whether to resample
+        # For "2h" and "4h", fetch at "60min" resolution
         if timeframe in ["2h", "4h"]:
             base_interval = "60min"
         else:
-            base_interval = timeframe  # "5min" or "30min"
-            
+            base_interval = timeframe
         function = "TIME_SERIES_INTRADAY"
         params = {
             "function": function,
@@ -72,16 +66,14 @@ def fetch_data(symbol, timeframe):
         df["Close"] = df["Close"].astype(float)
         if df.index.tz is None:
             df.index = df.index.tz_localize("UTC")
-            
-        # For "2h" and "4h", resample the 60min data into averages over 2 or 4 hours.
+        # For "2h" and "4h", resample the 60min data into averages
         if timeframe in ["2h", "4h"]:
             freq = "2H" if timeframe == "2h" else "4H"
             df = df["Close"].resample(freq).mean().dropna().to_frame()
-            print(f"Resampled intraday data to {freq} frequency, resulting in {len(df)} rows.")
-        
+            print(f"Resampled data to {freq} frequency, resulting in {len(df)} rows.")
         return df
     else:
-        # Daily data: use TIME_SERIES_DAILY endpoint.
+        # Daily data
         function = "TIME_SERIES_DAILY"
         outputsize = "compact"
         if timeframe == "1yr":
@@ -108,8 +100,7 @@ def fetch_data(symbol, timeframe):
         df.sort_index(inplace=True)
         df = df.rename(columns={"4. close": "Close"})
         df["Close"] = df["Close"].astype(float)
-        
-        # Determine date range based on daily timeframe option
+        # Define date range based on timeframe
         now = datetime.now()
         if timeframe == "1day":
             start_date = now - timedelta(days=1)
@@ -136,7 +127,7 @@ def fetch_data(symbol, timeframe):
 def create_arima_model(data):
     """
     Create and fit an ARIMA model on the 'Close' price.
-    For daily data, use ARIMA(0,1,1) with constant (trend='c') to capture drift.
+    Using ARIMA(0,1,1) with a constant (trend='c').
     """
     try:
         data = data.asfreq("D").ffill()
@@ -159,6 +150,29 @@ def arima_prediction(model):
         return forecast
     except Exception as e:
         print(f"ARIMA prediction error: {e}")
+        raise
+
+# ---------------------------
+# Intraday Forecast using Linear Regression
+# ---------------------------
+def linear_regression_forecast(data, periods=5):
+    """
+    Perform a simple linear regression on intraday data to forecast the next 'periods' values.
+    Uses the row number as the independent variable.
+    """
+    try:
+        x = np.arange(len(data))
+        y = data["Close"].values
+        # Fit a first degree polynomial (linear regression)
+        coeffs = np.polyfit(x, y, 1)
+        slope, intercept = coeffs
+        print(f"Linear regression coefficients: slope={slope}, intercept={intercept}")
+        x_future = len(data) + np.arange(1, periods + 1)
+        forecast = np.polyval(coeffs, x_future).tolist()
+        print(f"Linear regression forecast: {forecast}")
+        return forecast
+    except Exception as e:
+        print(f"Error in linear regression forecast: {e}")
         raise
 
 # ---------------------------
@@ -214,19 +228,20 @@ def fetch_news(symbol):
 def refine_predictions_with_openai(symbol, lstm_pred, arima_pred, history):
     """
     Call the OpenAI API to provide a detailed analysis of the stock.
-    The analysis includes historical performance, evaluation of the ARIMA forecast, a confidence level, and market recommendations.
+    The analysis includes historical performance, evaluation of the forecast,
+    a confidence level, and market recommendations.
     """
     history_tail = history["Close"].tail(30).tolist()
     prompt = f"""
     Analyze the following stock data for {symbol.upper()}:
 
     Historical Closing Prices (last 30 days): {history_tail}
-    ARIMA Forecast (next 5 days): {arima_pred}
+    Forecast (next 5 periods): {arima_pred}
 
     Provide a detailed analysis that includes:
     - Key observations on historical performance (e.g., highs, lows, volatility, trends).
-    - An evaluation of the ARIMA forecast, including any drift or trend changes.
-    - A confidence level in the forecast.
+    - An evaluation of the forecast, including any drift or trend changes.
+    - Your confidence level in the forecast.
     - Specific market recommendations, including risk management strategies.
 
     Format your response with clear headings and bullet points.
@@ -259,33 +274,26 @@ def process():
     timeframe = request.args.get("timeframe", "1mo")
     print(f"Received request for symbol: {symbol} with timeframe: {timeframe}")
     
-    cache_key = f"{symbol.upper()}_{timeframe}"
-    if cache_key in cache:
-        print("Returning cached result.")
-        return jsonify(cache[cache_key])
-    
     try:
         data = fetch_data(symbol, timeframe)
-        # For intraday timeframes, use a naive forecast.
+        # For intraday data, if timeframe is in intraday options, use linear regression forecast.
         intraday_options = ["5min", "30min", "2h", "4h"]
         if timeframe in intraday_options:
-            last_value = data["Close"].iloc[-1]
-            forecast = [last_value] * 5  # Naive forecast for intraday data
-            print(f"Using naive intraday forecast: {forecast}")
+            forecast = linear_regression_forecast(data)
         else:
             arima_model_obj = create_arima_model(data)
             forecast = arima_prediction(arima_model_obj)
+        
         refined_prediction = refine_predictions_with_openai(symbol, "N/A", forecast, data)
         chart_filename = generate_chart(data, symbol, forecast=forecast)
         news = fetch_news(symbol)
         
         response = {
-            "arima_prediction": forecast,
+            "forecast": forecast,
             "openai_refined_prediction": refined_prediction,
             "chart_path": chart_filename,
             "news": news
         }
-        cache[cache_key] = response
         return jsonify(response)
     except Exception as e:
         print(f"Error processing request: {e}")
