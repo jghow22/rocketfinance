@@ -9,7 +9,7 @@ from statsmodels.tsa.arima.model import ARIMA
 from datetime import datetime, timedelta
 import numpy as np
 
-# Global cache for responses (unused for fresh processing)
+# Global cache for responses (currently unused)
 cache = {}
 
 # Initialize Flask App with static folder
@@ -18,6 +18,20 @@ CORS(app, resources={r"/*": {"origins": "*"}})
 
 # Set API keys from environment variables
 openai.api_key = os.getenv("OPENAI_API_KEY")
+
+# ---------------------------
+# Helper: Create Dark Style for mplfinance
+# ---------------------------
+def create_dark_style():
+    """Create a custom dark style for mplfinance."""
+    import mplfinance as mpf
+    mc = mpf.make_marketcolors(up='green', down='red', edge='white', wick='white', volume='in')
+    style = mpf.make_mpf_style(base_mpf_style='nightclouds', marketcolors=mc)
+    # Force dark background
+    style['figure.facecolor'] = 'black'
+    style['axes.facecolor'] = 'black'
+    style['grid.color'] = 'dimgray'
+    return style
 
 # ---------------------------
 # Data Fetching from Alpha Vantage
@@ -59,7 +73,7 @@ def fetch_data(symbol, timeframe):
         df = pd.DataFrame.from_dict(ts_data, orient="index")
         df.index = pd.to_datetime(df.index)
         df.sort_index(inplace=True)
-        # For intraday, only use the Close.
+        # For intraday, we'll keep only the "Close" price.
         df = df.rename(columns={"4. close": "Close"})
         df["Close"] = df["Close"].astype(float)
         if df.index.tz is None:
@@ -70,7 +84,7 @@ def fetch_data(symbol, timeframe):
             print(f"Resampled intraday data to {freq} frequency, resulting in {len(df)} rows.")
         return df
     else:
-        # Daily data: use TIME_SERIES_DAILY and retain OHLC columns.
+        # Daily data: use TIME_SERIES_DAILY and retain OHLC.
         function = "TIME_SERIES_DAILY"
         outputsize = "compact" if timeframe != "1yr" else "full"
         params = {
@@ -127,7 +141,7 @@ def fetch_data(symbol, timeframe):
 def linear_regression_forecast(data, periods=5, degree=2):
     """
     Perform a degree-2 polynomial regression on intraday data to forecast the next 'periods' values.
-    Ensures continuity by forcing the first forecast value to equal the last historical closing price.
+    Forces the first forecast value to equal the last historical closing price.
     """
     try:
         x = np.arange(len(data))
@@ -204,29 +218,15 @@ def get_chart_data(data, forecast, timeframe):
     }
 
 # ---------------------------
-# Helper: Create Dark Style for mplfinance
-# ---------------------------
-def create_dark_style():
-    """Create a custom dark style for mplfinance."""
-    import mplfinance as mpf
-    mc = mpf.make_marketcolors(up='green', down='red', edge='white', wick='white', volume='in')
-    style = mpf.make_mpf_style(base_mpf_style='nightclouds', marketcolors=mc)
-    # Override to ensure dark background.
-    style['figure.facecolor'] = 'black'
-    style['axes.facecolor'] = 'black'
-    style['grid.color'] = 'dimgray'
-    return style
-
-# ---------------------------
 # Chart Generation with Candlestick Charting via mplfinance
 # ---------------------------
 def generate_chart(data, symbol, forecast=None, timeframe="1mo"):
     """
     Generate a chart image.
-    - If OHLC columns exist (daily data), create a candlestick chart with a dark theme using mplfinance.
-    - Overlay the forecast line so that its first point connects with the last historical close.
-      If there's a gap, draw a flat connector in yellow.
-    - For intraday data, use a simple line chart.
+    - If OHLC data exist (daily data), create a dark-themed candlestick chart using mplfinance.
+      Overlay the forecast line so its first point connects with the last historical price.
+      If there’s a gap, draw a flat connector in yellow.
+    - For intraday data (or if OHLC is missing), fall back to a simple line chart.
     """
     os.makedirs("static", exist_ok=True)
     filename = f"chart_{symbol.upper()}.png"
@@ -235,7 +235,6 @@ def generate_chart(data, symbol, forecast=None, timeframe="1mo"):
     if {"Open", "High", "Low", "Close"}.issubset(data.columns):
         try:
             import mplfinance as mpf
-            # Forward-fill missing OHLC data.
             data_filled = data.ffill()
             dark_style = create_dark_style()
             fig, ax = mpf.plot(data_filled, type='candle', style=dark_style,
@@ -244,15 +243,13 @@ def generate_chart(data, symbol, forecast=None, timeframe="1mo"):
             if isinstance(ax, list):
                 ax = ax[0]
             if forecast and len(forecast) > 0:
-                # Get forecast dates from the raw chart data.
                 chart_info = get_chart_data(data, forecast, timeframe)
                 forecast_dates = pd.to_datetime(chart_info["forecastDates"])
                 last_close = data["Close"].iloc[-1]
-                # Prepend the last historical point so the forecast line connects.
+                # Prepend the last historical point.
                 forecast_line = [last_close] + forecast
                 forecast_x = [data.index[-1]] + list(forecast_dates)
-                # If the first forecast value doesn't equal the last historical close,
-                # add a flat connector.
+                # Draw a connector line if necessary.
                 if forecast_line[0] != last_close:
                     ax.plot([data.index[-1], forecast_x[1]], [last_close, last_close],
                             linestyle="--", color="yellow", linewidth=2, label="Connector")
