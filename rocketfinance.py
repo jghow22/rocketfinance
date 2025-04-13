@@ -59,7 +59,7 @@ def fetch_data(symbol, timeframe):
         df = pd.DataFrame.from_dict(ts_data, orient="index")
         df.index = pd.to_datetime(df.index)
         df.sort_index(inplace=True)
-        # For intraday, use only the "Close" price.
+        # For intraday, only use the Close.
         df = df.rename(columns={"4. close": "Close"})
         df["Close"] = df["Close"].astype(float)
         if df.index.tz is None:
@@ -70,7 +70,7 @@ def fetch_data(symbol, timeframe):
             print(f"Resampled intraday data to {freq} frequency, resulting in {len(df)} rows.")
         return df
     else:
-        # Daily data: use TIME_SERIES_DAILY and retain OHLC.
+        # Daily data: use TIME_SERIES_DAILY and retain OHLC columns.
         function = "TIME_SERIES_DAILY"
         outputsize = "compact" if timeframe != "1yr" else "full"
         params = {
@@ -93,7 +93,6 @@ def fetch_data(symbol, timeframe):
         df = pd.DataFrame.from_dict(ts_data, orient="index")
         df.index = pd.to_datetime(df.index)
         df.sort_index(inplace=True)
-        # Rename OHLC columns.
         df = df.rename(columns={
             "1. open": "Open",
             "2. high": "High",
@@ -103,7 +102,6 @@ def fetch_data(symbol, timeframe):
         for col in ["Open", "High", "Low", "Close"]:
             df[col] = df[col].astype(float)
         now = datetime.now()
-        # Extended window for daily data.
         if timeframe == "1day":
             start_date = now - timedelta(days=7)
         elif timeframe == "7day":
@@ -129,7 +127,7 @@ def fetch_data(symbol, timeframe):
 def linear_regression_forecast(data, periods=5, degree=2):
     """
     Perform a degree-2 polynomial regression on intraday data to forecast the next 'periods' values.
-    Forces the first forecast value to equal the last historical closing price.
+    Ensures continuity by forcing the first forecast value to equal the last historical closing price.
     """
     try:
         x = np.arange(len(data))
@@ -206,49 +204,57 @@ def get_chart_data(data, forecast, timeframe):
     }
 
 # ---------------------------
+# Helper: Create Dark Style for mplfinance
+# ---------------------------
+def create_dark_style():
+    """Create a custom dark style for mplfinance."""
+    import mplfinance as mpf
+    mc = mpf.make_marketcolors(up='green', down='red', edge='white', wick='white', volume='in')
+    style = mpf.make_mpf_style(base_mpf_style='nightclouds', marketcolors=mc)
+    # Override to ensure dark background.
+    style['figure.facecolor'] = 'black'
+    style['axes.facecolor'] = 'black'
+    style['grid.color'] = 'dimgray'
+    return style
+
+# ---------------------------
 # Chart Generation with Candlestick Charting via mplfinance
 # ---------------------------
 def generate_chart(data, symbol, forecast=None, timeframe="1mo"):
     """
-    Generate a chart image of historical prices.
-    If OHLC data are available (daily data), create a dark-themed candlestick chart using mplfinance.
-    Overlay the forecast line so that:
-      - The forecast line's first point connects to the last historical point.
-      - If there’s a gap (e.g. market closed), draw a flat connector in yellow.
-    For intraday data or if OHLC data is not available, fall back to a simple line chart.
+    Generate a chart image.
+    - If OHLC columns exist (daily data), create a candlestick chart with a dark theme using mplfinance.
+    - Overlay the forecast line so that its first point connects with the last historical close.
+      If there's a gap, draw a flat connector in yellow.
+    - For intraday data, use a simple line chart.
     """
     os.makedirs("static", exist_ok=True)
     filename = f"chart_{symbol.upper()}.png"
     filepath = os.path.join("static", filename)
     
-    # Check if OHLC columns are present.
     if {"Open", "High", "Low", "Close"}.issubset(data.columns):
         try:
             import mplfinance as mpf
-            # Forward-fill to avoid missing data issues.
+            # Forward-fill missing OHLC data.
             data_filled = data.ffill()
-            mc = mpf.make_marketcolors(up='green', down='red', edge='white', wick='white', volume='in')
-            custom_style = mpf.make_mpf_style(base_mpf_style='nightclouds', marketcolors=mc)
-            
-            # Plot candlestick chart and retrieve figure/axes.
-            fig, ax = mpf.plot(data_filled, type='candle', style=custom_style,
+            dark_style = create_dark_style()
+            fig, ax = mpf.plot(data_filled, type='candle', style=dark_style,
                                title=f"{symbol.upper()} Candlestick Chart",
                                ylabel="Price", returnfig=True)
-            # If ax is a list (which can happen), select the first axis.
             if isinstance(ax, list):
                 ax = ax[0]
-            
             if forecast and len(forecast) > 0:
-                # Get forecast dates.
+                # Get forecast dates from the raw chart data.
                 chart_info = get_chart_data(data, forecast, timeframe)
                 forecast_dates = pd.to_datetime(chart_info["forecastDates"])
-                last_hist = data["Close"].iloc[-1]
-                # Build forecast line: ensure the first forecast point equals last_hist.
-                forecast_line = [last_hist] + forecast
+                last_close = data["Close"].iloc[-1]
+                # Prepend the last historical point so the forecast line connects.
+                forecast_line = [last_close] + forecast
                 forecast_x = [data.index[-1]] + list(forecast_dates)
-                # If the forecast line's first forecast point is different, draw a flat connector.
-                if forecast_line[0] != last_hist:
-                    ax.plot([data.index[-1], forecast_x[1]], [last_hist, last_hist],
+                # If the first forecast value doesn't equal the last historical close,
+                # add a flat connector.
+                if forecast_line[0] != last_close:
+                    ax.plot([data.index[-1], forecast_x[1]], [last_close, last_close],
                             linestyle="--", color="yellow", linewidth=2, label="Connector")
                 ax.plot(forecast_x, forecast_line, linestyle="--", marker="o", color="cyan", linewidth=2, label="Forecast")
                 ax.legend()
@@ -256,7 +262,7 @@ def generate_chart(data, symbol, forecast=None, timeframe="1mo"):
             plt.close(fig)
         except Exception as e:
             print(f"Error using mplfinance for candlestick chart: {e}")
-            # Fallback to simple line chart.
+            # Fallback to a simple line chart.
             plt.style.use("seaborn-dark")
             plt.figure(figsize=(10, 5))
             plt.plot(data.index, data["Close"], label="Historical", color="blue")
@@ -393,7 +399,6 @@ def process():
             "chartData": {"symbol": symbol.upper(), **chart_data},
             "news": news
         }
-        # Clear any cached entry.
         cache.pop(f"{symbol.upper()}_{timeframe}", None)
         return jsonify(response)
     except Exception as e:
