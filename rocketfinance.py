@@ -25,12 +25,10 @@ openai.api_key = os.getenv("OPENAI_API_KEY")
 def fetch_data(symbol, timeframe):
     """
     Fetch stock data for a symbol from Alpha Vantage.
-
-    For intraday timeframes ("5min", "30min", "2h", "4h"), uses TIME_SERIES_INTRADAY.
-      - For "2h" and "4h", fetches "60min" data then resamples.
-    
-    For daily timeframes ("1day", "7day", "1mo", "3mo", "1yr"), uses TIME_SERIES_DAILY 
-    and returns OHLC columns (if available) after filtering by an extended window.
+    - For intraday timeframes ("5min", "30min", "2h", "4h"), uses TIME_SERIES_INTRADAY.
+      For "2h" and "4h", fetches "60min" data then resamples.
+    - For daily timeframes ("1day", "7day", "1mo", "3mo", "1yr"), uses TIME_SERIES_DAILY and returns OHLC columns,
+      filtering by an extended window.
     """
     api_key = os.getenv("ALPHAVANTAGE_API_KEY")
     if not api_key:
@@ -65,7 +63,7 @@ def fetch_data(symbol, timeframe):
         df = pd.DataFrame.from_dict(ts_data, orient="index")
         df.index = pd.to_datetime(df.index)
         df.sort_index(inplace=True)
-        # For intraday, keep only the close price.
+        # For intraday, we'll use only the "Close" price.
         df = df.rename(columns={"4. close": "Close"})
         df["Close"] = df["Close"].astype(float)
         if df.index.tz is None:
@@ -76,7 +74,7 @@ def fetch_data(symbol, timeframe):
             print(f"Resampled intraday data to {freq} frequency, resulting in {len(df)} rows.")
         return df
     else:
-        # Daily data: use TIME_SERIES_DAILY and retain OHLC for candlestick charting.
+        # Daily data: retain OHLC for candlestick charting.
         function = "TIME_SERIES_DAILY"
         outputsize = "compact"
         if timeframe == "1yr":
@@ -111,7 +109,7 @@ def fetch_data(symbol, timeframe):
         for col in ["Open", "High", "Low", "Close"]:
             df[col] = df[col].astype(float)
         now = datetime.now()
-        # Extended window for daily timeframes.
+        # Extended window to ensure sufficient data for daily timeframes.
         if timeframe == "1day":
             start_date = now - timedelta(days=7)
         elif timeframe == "7day":
@@ -137,7 +135,7 @@ def fetch_data(symbol, timeframe):
 def linear_regression_forecast(data, periods=5, degree=2):
     """
     Perform a degree-2 polynomial regression on intraday data to forecast the next 'periods' values.
-    Forces the first forecast value to equal the last observed closing price.
+    Ensures continuity by forcing the first forecast value to equal the last historical closing price.
     """
     try:
         x = np.arange(len(data))
@@ -219,43 +217,40 @@ def get_chart_data(data, forecast, timeframe):
 def generate_chart(data, symbol, forecast=None, timeframe="1mo"):
     """
     Generate a chart image of historical prices.
-    For daily data with OHLC, create a candlestick chart using mplfinance with a dark theme.
-    Overlay the forecast line such that the first forecast point connects with the last historical price.
-    If there's a gap (market closed), draw a flat connecting line in yellow.
-    For intraday data or if OHLC data is not available, fall back to a simple line chart.
+    If OHLC columns are available (daily data), create a candlestick chart using mplfinance with a dark theme.
+    Overlay the forecast line so that:
+      - The forecast line connects with the last historical point.
+      - If there is a gap (e.g. when the market is closed), a flat connecting line is drawn in a different color.
+    For intraday data (or if OHLC is not available), fall back to a simple line chart.
     """
     os.makedirs("static", exist_ok=True)
     filename = f"chart_{symbol.upper()}.png"
     filepath = os.path.join("static", filename)
-    
+
     if {"Open", "High", "Low", "Close"}.issubset(data.columns):
         try:
             import mplfinance as mpf
-            # Plot candlestick chart for historical data.
+            # Create custom market colors for a dark theme.
             mc = mpf.make_marketcolors(up='green', down='red', edge='white', wick='white', volume='in')
             custom_style = mpf.make_mpf_style(base_mpf_style='nightclouds', marketcolors=mc)
+
+            # Plot candlestick chart and return figure and axes.
             fig, ax = mpf.plot(data, type='candle', style=custom_style,
-                               title=f"{symbol.upper()} Candlestick Chart", ylabel="Price",
-                               returnfig=True)
-            # Overlay forecast if provided.
+                               title=f"{symbol.upper()} Candlestick Chart",
+                               ylabel="Price", returnfig=True)
+
             if forecast and len(forecast) > 0:
+                # Get forecast dates for daily data.
                 chart_info = get_chart_data(data, forecast, timeframe)
-                # Convert forecast dates from ISO strings to datetime.
                 forecast_dates = pd.to_datetime(chart_info["forecastDates"])
-                last_date = data.index[-1]
-                last_price = data["Close"].iloc[-1]
-                # Prepend the last historical point to forecast arrays.
-                forecast_line = [last_price] + forecast
-                # Generate forecast dates with the last historical date as first point.
-                forecast_line_dates = [last_date] + list(forecast_dates)
-                # If there's a gap between the last historical date and the first forecast date,
-                # plot a flat connector line in yellow.
-                if (forecast_line_dates[1] - forecast_line_dates[0]) > timedelta(days=1):
-                    ax.plot([forecast_line_dates[0], forecast_line_dates[1]],
-                            [last_price, last_price],
-                            label="Connector", linestyle="--", color="yellow", linewidth=2)
+                # Create forecast line that connects with the last historical closing price.
+                last_hist = data["Close"].iloc[-1]
+                # The first forecast point is the last historical value; subsequent points are forecasted.
+                forecast_line = [last_hist] + forecast
+                # Create corresponding x-axis: prepend the last historical date.
+                forecast_x = [data.index[-1]] + list(forecast_dates)
                 # Plot the forecast line.
-                ax.plot(forecast_line_dates, forecast_line, label="Forecast", linestyle="--",
+                ax.plot(forecast_x, forecast_line, label="Forecast", linestyle="--",
                         marker="o", color="cyan", linewidth=2)
                 ax.legend()
             fig.savefig(filepath)
@@ -269,9 +264,6 @@ def generate_chart(data, symbol, forecast=None, timeframe="1mo"):
             if forecast and len(forecast) > 0:
                 last_date = data.index[-1]
                 forecast_dates = pd.date_range(start=last_date + timedelta(days=1), periods=len(forecast), freq="B")
-                # Draw connector
-                plt.plot([last_date, forecast_dates[0]], [data["Close"].iloc[-1], data["Close"].iloc[-1]], 
-                         label="Connector", linestyle="--", color="yellow", linewidth=2)
                 plt.plot(forecast_dates, forecast, label="Forecast", linestyle="--", marker="o", color="red", linewidth=2)
             plt.title(f"{symbol.upper()} Prices")
             plt.xlabel("Date")
@@ -282,7 +274,7 @@ def generate_chart(data, symbol, forecast=None, timeframe="1mo"):
             plt.savefig(filepath)
             plt.close()
     else:
-        # Fallback to an intraday line chart.
+        # Fallback for intraday data (line chart).
         plt.style.use("seaborn-dark")
         plt.figure(figsize=(10, 5))
         plt.plot(data.index, data["Close"], label="Historical", color="blue")
@@ -298,10 +290,6 @@ def generate_chart(data, symbol, forecast=None, timeframe="1mo"):
                 forecast_dates = [last_date + delta * (i + 1) for i in range(len(forecast))]
             else:
                 forecast_dates = pd.date_range(start=last_date + timedelta(days=1), periods=len(forecast), freq="B")
-            # Connector line for potential gap.
-            if forecast_dates[0] - last_date > timedelta(days=1):
-                plt.plot([last_date, forecast_dates[0]], [data["Close"].iloc[-1], data["Close"].iloc[-1]],
-                         label="Connector", linestyle="--", color="yellow", linewidth=2)
             plt.plot(forecast_dates, forecast, label="Forecast", linestyle="--", marker="o", color="red", linewidth=2)
         plt.title(f"{symbol.upper()} Prices")
         plt.xlabel("Date")
@@ -406,7 +394,7 @@ def process():
             "chartData": {"symbol": symbol.upper(), **chart_data},
             "news": news
         }
-        # Clear cached entry to force fresh processing.
+        # Clear cache entry to force fresh processing.
         cache.pop(f"{symbol.upper()}_{timeframe}", None)
         return jsonify(response)
     except Exception as e:
