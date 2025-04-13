@@ -9,7 +9,7 @@ from statsmodels.tsa.arima.model import ARIMA
 from datetime import datetime, timedelta
 import numpy as np
 
-# Global cache for responses (unused for fresh processing)
+# Global cache for responses (currently unused)
 cache = {}
 
 # Initialize Flask App with static folder
@@ -25,9 +25,9 @@ openai.api_key = os.getenv("OPENAI_API_KEY")
 def fetch_data(symbol, timeframe):
     """
     Fetch stock data for a symbol from Alpha Vantage.
-    - For intraday timeframes ("5min", "30min", "2h", "4h"), uses TIME_SERIES_INTRADAY.
+    - For intraday ("5min", "30min", "2h", "4h"), uses TIME_SERIES_INTRADAY.
       For "2h" and "4h", fetches "60min" data then resamples.
-    - For daily timeframes ("1day", "7day", "1mo", "3mo", "1yr"), uses TIME_SERIES_DAILY and returns OHLC columns,
+    - For daily ("1day", "7day", "1mo", "3mo", "1yr"), uses TIME_SERIES_DAILY and returns OHLC data,
       filtering by an extended window.
     """
     api_key = os.getenv("ALPHAVANTAGE_API_KEY")
@@ -35,12 +35,8 @@ def fetch_data(symbol, timeframe):
         raise ValueError("Alpha Vantage API key not set in environment variable ALPHAVANTAGE_API_KEY")
     
     intraday_options = ["5min", "30min", "2h", "4h"]
-    
     if timeframe in intraday_options:
-        if timeframe in ["2h", "4h"]:
-            base_interval = "60min"
-        else:
-            base_interval = timeframe
+        base_interval = "60min" if timeframe in ["2h", "4h"] else timeframe
         function = "TIME_SERIES_INTRADAY"
         params = {
             "function": function,
@@ -63,7 +59,7 @@ def fetch_data(symbol, timeframe):
         df = pd.DataFrame.from_dict(ts_data, orient="index")
         df.index = pd.to_datetime(df.index)
         df.sort_index(inplace=True)
-        # For intraday, we only use the "Close" price.
+        # Use only Close for intraday charting.
         df = df.rename(columns={"4. close": "Close"})
         df["Close"] = df["Close"].astype(float)
         if df.index.tz is None:
@@ -74,11 +70,9 @@ def fetch_data(symbol, timeframe):
             print(f"Resampled intraday data to {freq} frequency, resulting in {len(df)} rows.")
         return df
     else:
-        # Daily data: use TIME_SERIES_DAILY and retain OHLC for candlestick charting.
+        # Daily data: use TIME_SERIES_DAILY and retain OHLC.
         function = "TIME_SERIES_DAILY"
-        outputsize = "compact"
-        if timeframe == "1yr":
-            outputsize = "full"
+        outputsize = "compact" if timeframe != "1yr" else "full"
         params = {
             "function": function,
             "symbol": symbol,
@@ -99,7 +93,6 @@ def fetch_data(symbol, timeframe):
         df = pd.DataFrame.from_dict(ts_data, orient="index")
         df.index = pd.to_datetime(df.index)
         df.sort_index(inplace=True)
-        # Rename OHLC columns.
         df = df.rename(columns={
             "1. open": "Open",
             "2. high": "High",
@@ -109,7 +102,7 @@ def fetch_data(symbol, timeframe):
         for col in ["Open", "High", "Low", "Close"]:
             df[col] = df[col].astype(float)
         now = datetime.now()
-        # Extend the window for daily data.
+        # Extended window for daily data.
         if timeframe == "1day":
             start_date = now - timedelta(days=7)
         elif timeframe == "7day":
@@ -216,53 +209,49 @@ def get_chart_data(data, forecast, timeframe):
 # ---------------------------
 def generate_chart(data, symbol, forecast=None, timeframe="1mo"):
     """
-    Generate a chart image of historical prices.
-    If OHLC columns are available (daily data), attempt to create a candlestick chart using mplfinance with a dark theme.
-    Overlays the forecast line so that it connects to the last historical point.
-    If there is a gap, a flat connecting line is drawn in cyan.
-    For intraday data or if OHLC is not available, falls back to a simple line chart.
+    Generate a chart image.
+    If OHLC data are available (daily data), attempt to create a dark-themed candlestick chart using mplfinance.
+    The forecast line is overlaid so that it connects to the last historical point.
+    If there’s a gap, a flat connecting line (in cyan) is drawn.
+    For intraday data (or if OHLC is not present), a simple line chart is generated.
     """
     os.makedirs("static", exist_ok=True)
     filename = f"chart_{symbol.upper()}.png"
     filepath = os.path.join("static", filename)
     
+    # Check if OHLC data is available.
     if {"Open", "High", "Low", "Close"}.issubset(data.columns):
         try:
             import mplfinance as mpf
-            # Custom dark theme.
+            # Forward-fill any missing OHLC values.
+            data_filled = data.ffill()
             mc = mpf.make_marketcolors(up='green', down='red', edge='white', wick='white', volume='in')
             custom_style = mpf.make_mpf_style(base_mpf_style='nightclouds', marketcolors=mc)
             
             # Plot candlestick chart.
-            fig, ax = mpf.plot(data, type='candle', style=custom_style,
+            fig, ax = mpf.plot(data_filled, type='candle', style=custom_style,
                                title=f"{symbol.upper()} Candlestick Chart",
                                ylabel="Price", returnfig=True)
-            # Ensure ax is a single axes object.
-            if isinstance(ax, list):
-                ax = ax[0]
-            
             if forecast and len(forecast) > 0:
                 # Get forecast dates.
-                last_date = data.index[-1]
-                forecast_dates = pd.date_range(start=last_date + timedelta(days=1), periods=len(forecast), freq="B")
-                # Build forecast line ensuring the first point matches the last historical Close.
-                last_close = data["Close"].iloc[-1]
-                # If the forecast already starts at last_close, the gap will be closed; 
-                # otherwise, force a connecting flat line.
-                if forecast[0] != last_close:
-                    # Draw a flat line from last_date to the first forecast date.
-                    ax.plot([last_date, forecast_dates[0]], [last_close, last_close],
+                chart_info = get_chart_data(data, forecast, timeframe)
+                forecast_dates = pd.to_datetime(chart_info["forecastDates"])
+                last_hist = data["Close"].iloc[-1]
+                # Build forecast line: prepend the last historical point.
+                forecast_line = [last_hist] + forecast
+                # Build forecast x-axis.
+                forecast_x = [data.index[-1]] + list(forecast_dates)
+                # If the first forecast value is not equal to the last historical value, draw a flat connector.
+                if forecast_line[0] != last_hist:
+                    ax.plot([data.index[-1], forecast_x[1]], [last_hist, last_hist],
                             linestyle="--", color="yellow", linewidth=2, label="Connector")
-                # Now, overlay the forecast line.
-                x_vals = list(forecast_dates)
-                y_vals = forecast
-                ax.plot(x_vals, y_vals, linestyle="--", marker="o", color="cyan", linewidth=2, label="Forecast")
+                ax.plot(forecast_x, forecast_line, linestyle="--", marker="o", color="cyan", linewidth=2, label="Forecast")
                 ax.legend()
             fig.savefig(filepath)
             plt.close(fig)
         except Exception as e:
             print(f"Error using mplfinance for candlestick chart: {e}")
-            # Fallback to a simple line chart.
+            # Fallback: simple line chart.
             plt.style.use("seaborn-dark")
             plt.figure(figsize=(10, 5))
             plt.plot(data.index, data["Close"], label="Historical", color="blue")
@@ -279,7 +268,7 @@ def generate_chart(data, symbol, forecast=None, timeframe="1mo"):
             plt.savefig(filepath)
             plt.close()
     else:
-        # Fallback for intraday data: simple line chart.
+        # Fallback for intraday data.
         plt.style.use("seaborn-dark")
         plt.figure(figsize=(10, 5))
         plt.plot(data.index, data["Close"], label="Historical", color="blue")
@@ -333,8 +322,7 @@ def fetch_news(symbol):
 def refine_predictions_with_openai(symbol, lstm_pred, forecast, history):
     """
     Call the OpenAI API to provide a detailed analysis of the stock.
-    The analysis includes historical performance, evaluation of the forecast, a confidence level,
-    and market recommendations.
+    The analysis includes historical performance, forecast evaluation, a confidence level, and market recommendations.
     """
     history_tail = history["Close"].tail(30).tolist()
     prompt = f"""
@@ -400,7 +388,7 @@ def process():
             "chartData": {"symbol": symbol.upper(), **chart_data},
             "news": news
         }
-        # Clear cached entry to force fresh processing on each request.
+        # Clear cache to force fresh processing.
         cache.pop(f"{symbol.upper()}_{timeframe}", None)
         return jsonify(response)
     except Exception as e:
