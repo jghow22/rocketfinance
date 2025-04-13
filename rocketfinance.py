@@ -9,7 +9,7 @@ from statsmodels.tsa.arima.model import ARIMA
 from datetime import datetime, timedelta
 import numpy as np
 
-# Global cache for responses (currently unused)
+# Global cache for responses (unused for fresh processing)
 cache = {}
 
 # Initialize Flask App with static folder
@@ -27,8 +27,8 @@ def fetch_data(symbol, timeframe):
     Fetch stock data for a symbol from Alpha Vantage.
     - For intraday ("5min", "30min", "2h", "4h"), uses TIME_SERIES_INTRADAY.
       For "2h" and "4h", fetches "60min" data then resamples.
-    - For daily ("1day", "7day", "1mo", "3mo", "1yr"), uses TIME_SERIES_DAILY and returns OHLC data,
-      filtering by an extended window.
+    - For daily ("1day", "7day", "1mo", "3mo", "1yr"), uses TIME_SERIES_DAILY
+      and returns OHLC data, filtered by an extended window.
     """
     api_key = os.getenv("ALPHAVANTAGE_API_KEY")
     if not api_key:
@@ -59,7 +59,7 @@ def fetch_data(symbol, timeframe):
         df = pd.DataFrame.from_dict(ts_data, orient="index")
         df.index = pd.to_datetime(df.index)
         df.sort_index(inplace=True)
-        # Use only Close for intraday charting.
+        # For intraday, use only the "Close" price.
         df = df.rename(columns={"4. close": "Close"})
         df["Close"] = df["Close"].astype(float)
         if df.index.tz is None:
@@ -93,6 +93,7 @@ def fetch_data(symbol, timeframe):
         df = pd.DataFrame.from_dict(ts_data, orient="index")
         df.index = pd.to_datetime(df.index)
         df.sort_index(inplace=True)
+        # Rename OHLC columns.
         df = df.rename(columns={
             "1. open": "Open",
             "2. high": "High",
@@ -209,39 +210,43 @@ def get_chart_data(data, forecast, timeframe):
 # ---------------------------
 def generate_chart(data, symbol, forecast=None, timeframe="1mo"):
     """
-    Generate a chart image.
-    If OHLC data are available (daily data), attempt to create a dark-themed candlestick chart using mplfinance.
-    The forecast line is overlaid so that it connects to the last historical point.
-    If there’s a gap, a flat connecting line (in cyan) is drawn.
-    For intraday data (or if OHLC is not present), a simple line chart is generated.
+    Generate a chart image of historical prices.
+    If OHLC data are available (daily data), create a dark-themed candlestick chart using mplfinance.
+    Overlay the forecast line so that:
+      - The forecast line's first point connects to the last historical point.
+      - If there’s a gap (e.g. market closed), draw a flat connector in yellow.
+    For intraday data or if OHLC data is not available, fall back to a simple line chart.
     """
     os.makedirs("static", exist_ok=True)
     filename = f"chart_{symbol.upper()}.png"
     filepath = os.path.join("static", filename)
     
-    # Check if OHLC data is available.
+    # Check if OHLC columns are present.
     if {"Open", "High", "Low", "Close"}.issubset(data.columns):
         try:
             import mplfinance as mpf
-            # Forward-fill any missing OHLC values.
+            # Forward-fill to avoid missing data issues.
             data_filled = data.ffill()
             mc = mpf.make_marketcolors(up='green', down='red', edge='white', wick='white', volume='in')
             custom_style = mpf.make_mpf_style(base_mpf_style='nightclouds', marketcolors=mc)
             
-            # Plot candlestick chart.
+            # Plot candlestick chart and retrieve figure/axes.
             fig, ax = mpf.plot(data_filled, type='candle', style=custom_style,
                                title=f"{symbol.upper()} Candlestick Chart",
                                ylabel="Price", returnfig=True)
+            # If ax is a list (which can happen), select the first axis.
+            if isinstance(ax, list):
+                ax = ax[0]
+            
             if forecast and len(forecast) > 0:
                 # Get forecast dates.
                 chart_info = get_chart_data(data, forecast, timeframe)
                 forecast_dates = pd.to_datetime(chart_info["forecastDates"])
                 last_hist = data["Close"].iloc[-1]
-                # Build forecast line: prepend the last historical point.
+                # Build forecast line: ensure the first forecast point equals last_hist.
                 forecast_line = [last_hist] + forecast
-                # Build forecast x-axis.
                 forecast_x = [data.index[-1]] + list(forecast_dates)
-                # If the first forecast value is not equal to the last historical value, draw a flat connector.
+                # If the forecast line's first forecast point is different, draw a flat connector.
                 if forecast_line[0] != last_hist:
                     ax.plot([data.index[-1], forecast_x[1]], [last_hist, last_hist],
                             linestyle="--", color="yellow", linewidth=2, label="Connector")
@@ -251,7 +256,7 @@ def generate_chart(data, symbol, forecast=None, timeframe="1mo"):
             plt.close(fig)
         except Exception as e:
             print(f"Error using mplfinance for candlestick chart: {e}")
-            # Fallback: simple line chart.
+            # Fallback to simple line chart.
             plt.style.use("seaborn-dark")
             plt.figure(figsize=(10, 5))
             plt.plot(data.index, data["Close"], label="Historical", color="blue")
@@ -322,7 +327,7 @@ def fetch_news(symbol):
 def refine_predictions_with_openai(symbol, lstm_pred, forecast, history):
     """
     Call the OpenAI API to provide a detailed analysis of the stock.
-    The analysis includes historical performance, forecast evaluation, a confidence level, and market recommendations.
+    The analysis includes historical performance, forecast evaluation, confidence level, and market recommendations.
     """
     history_tail = history["Close"].tail(30).tolist()
     prompt = f"""
@@ -388,7 +393,7 @@ def process():
             "chartData": {"symbol": symbol.upper(), **chart_data},
             "news": news
         }
-        # Clear cache to force fresh processing.
+        # Clear any cached entry.
         cache.pop(f"{symbol.upper()}_{timeframe}", None)
         return jsonify(response)
     except Exception as e:
