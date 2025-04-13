@@ -9,7 +9,7 @@ from statsmodels.tsa.arima.model import ARIMA
 from datetime import datetime, timedelta
 import numpy as np
 
-# Global cache for responses (unused in fresh processing)
+# Global cache for responses (unused for fresh processing)
 cache = {}
 
 # Initialize Flask App with static folder
@@ -30,7 +30,7 @@ def fetch_data(symbol, timeframe):
       - For "2h" and "4h", fetches "60min" data then resamples.
     
     For daily timeframes ("1day", "7day", "1mo", "3mo", "1yr"), uses TIME_SERIES_DAILY 
-    and filters the data by an extended window to ensure sufficient trading data.
+    and returns OHLC columns, filtering by an extended window to ensure sufficient data.
     """
     api_key = os.getenv("ALPHAVANTAGE_API_KEY")
     if not api_key:
@@ -65,17 +65,19 @@ def fetch_data(symbol, timeframe):
         df = pd.DataFrame.from_dict(ts_data, orient="index")
         df.index = pd.to_datetime(df.index)
         df.sort_index(inplace=True)
+        # Retain only the Close price for intraday (candlesticks for intraday are less common)
         df = df.rename(columns={"4. close": "Close"})
         df["Close"] = df["Close"].astype(float)
         if df.index.tz is None:
             df.index = df.index.tz_localize("UTC")
+        # For "2h" and "4h", resample the 60min data into averages.
         if timeframe in ["2h", "4h"]:
             freq = "2H" if timeframe == "2h" else "4H"
             df = df["Close"].resample(freq).mean().dropna().to_frame()
             print(f"Resampled intraday data to {freq} frequency, resulting in {len(df)} rows.")
         return df
     else:
-        # Daily data via TIME_SERIES_DAILY.
+        # Daily data via TIME_SERIES_DAILY: retain OHLC columns for candlestick charts.
         function = "TIME_SERIES_DAILY"
         outputsize = "compact"
         if timeframe == "1yr":
@@ -100,10 +102,17 @@ def fetch_data(symbol, timeframe):
         df = pd.DataFrame.from_dict(ts_data, orient="index")
         df.index = pd.to_datetime(df.index)
         df.sort_index(inplace=True)
-        df = df.rename(columns={"4. close": "Close"})
-        df["Close"] = df["Close"].astype(float)
+        # Rename columns to standard names and convert to float.
+        df = df.rename(columns={
+            "1. open": "Open",
+            "2. high": "High",
+            "3. low": "Low",
+            "4. close": "Close"
+        })
+        for col in ["Open", "High", "Low", "Close"]:
+            df[col] = df[col].astype(float)
         now = datetime.now()
-        # Use extended windows to ensure enough data points:
+        # Use an extended window so that even for "1day" and "7day" enough data is returned.
         if timeframe == "1day":
             start_date = now - timedelta(days=7)
         elif timeframe == "7day":
@@ -129,7 +138,7 @@ def fetch_data(symbol, timeframe):
 def linear_regression_forecast(data, periods=5, degree=2):
     """
     Perform a degree-2 polynomial regression on intraday data to forecast the next 'periods' values.
-    Ensures that the forecast's first value matches the last observed closing price.
+    Ensures continuity by forcing the first forecast value to equal the last observed closing price.
     """
     try:
         x = np.arange(len(data))
@@ -138,7 +147,7 @@ def linear_regression_forecast(data, periods=5, degree=2):
         poly = np.poly1d(coeffs)
         x_future = np.arange(len(data), len(data) + periods)
         forecast = poly(x_future)
-        forecast[0] = y[-1]
+        forecast[0] = y[-1]  # Ensure continuity
         forecast = forecast.tolist()
         print(f"Polynomial regression forecast (degree={degree}): {forecast}")
         return forecast
@@ -206,43 +215,70 @@ def get_chart_data(data, forecast, timeframe):
     }
 
 # ---------------------------
-# Chart Generation with Modern Styling
+# Chart Generation with Candlestick Styling using mplfinance
 # ---------------------------
 def generate_chart(data, symbol, forecast=None, timeframe="1mo"):
     """
-    Generate a chart image of historical closing prices using matplotlib with a modern style.
-    If forecast is provided, overlay it with timestamps based on the timeframe.
+    Generate a chart image of historical closing prices.
+    If OHLC data is present (daily data), display a candlestick chart styled similarly to Robinhood.
+    If forecast data is provided (for daily data), overlay the forecast line so it touches the last historical point.
+    For intraday data without OHLC, fall back to a simple line chart.
     """
     os.makedirs("static", exist_ok=True)
     filename = f"chart_{symbol.upper()}.png"
     filepath = os.path.join("static", filename)
-    
-    plt.style.use("seaborn-whitegrid")
-    plt.figure(figsize=(10, 5))
-    plt.plot(data.index, data["Close"], label="Historical", color="blue")
-    
-    if forecast and len(forecast) > 0:
-        last_date = data.index[-1]
-        if timeframe.endswith("min"):
-            minutes = int(timeframe.replace("min", ""))
-            delta = timedelta(minutes=minutes)
-            forecast_dates = [last_date + delta * (i + 1) for i in range(len(forecast))]
-        elif timeframe.endswith("h"):
-            hours = int(timeframe.replace("h", ""))
-            delta = timedelta(hours=hours)
-            forecast_dates = [last_date + delta * (i + 1) for i in range(len(forecast))]
+
+    # Check if OHLC data is available.
+    if {"Open", "High", "Low", "Close"}.issubset(data.columns):
+        # Use mplfinance for candlestick charting.
+        import mplfinance as mpf
+
+        # Create forecast DataFrame if forecast available.
+        if forecast and len(forecast) > 0:
+            from pandas import to_datetime
+            # Get forecast dates from raw chart data.
+            chart_info = get_chart_data(data, forecast, timeframe)
+            forecast_dates = pd.to_datetime(chart_info["forecastDates"])
+            # Create a DataFrame with forecasted "Close" values; leave OHLC as NaN.
+            df_forecast = pd.DataFrame({"Close": forecast}, index=forecast_dates)
+            combined_df = pd.concat([data, df_forecast])
         else:
-            forecast_dates = pd.date_range(start=last_date + timedelta(days=1), periods=len(forecast), freq="B")
-        plt.plot(forecast_dates, forecast, label="Forecast", linestyle="--", marker="o", color="red", linewidth=2)
-    
-    plt.title(f"{symbol.upper()} Closing Prices")
-    plt.xlabel("Date")
-    plt.ylabel("Close Price")
-    plt.grid(True)
-    plt.legend()
-    plt.gcf().autofmt_xdate()
-    plt.savefig(filepath)
-    plt.close()
+            combined_df = data
+        
+        # Create a custom market style.
+        mc = mpf.make_marketcolors(up='green', down='red', edge='inherit', wick='inherit', volume='in')
+        custom_style = mpf.make_mpf_style(base_mpf_style='nightclouds', marketcolors=mc)
+        
+        # Plot candlestick chart.
+        mpf.plot(combined_df, type='candle', style=custom_style,
+                 title=f"{symbol.upper()} Candlestick Chart",
+                 ylabel="Price", savefig=filepath)
+    else:
+        # Fallback to a line chart (for intraday if OHLC not available).
+        plt.style.use("seaborn-whitegrid")
+        plt.figure(figsize=(10, 5))
+        plt.plot(data.index, data["Close"], label="Historical", color="blue")
+        if forecast and len(forecast) > 0:
+            last_date = data.index[-1]
+            if timeframe.endswith("min"):
+                minutes = int(timeframe.replace("min", ""))
+                delta = timedelta(minutes=minutes)
+                forecast_dates = [last_date + delta * (i + 1) for i in range(len(forecast))]
+            elif timeframe.endswith("h"):
+                hours = int(timeframe.replace("h", ""))
+                delta = timedelta(hours=hours)
+                forecast_dates = [last_date + delta * (i + 1) for i in range(len(forecast))]
+            else:
+                forecast_dates = pd.date_range(start=last_date + timedelta(days=1), periods=len(forecast), freq="B")
+            plt.plot(forecast_dates, forecast, label="Forecast", linestyle="--", marker="o", color="red", linewidth=2)
+        plt.title(f"{symbol.upper()} Closing Prices")
+        plt.xlabel("Date")
+        plt.ylabel("Close Price")
+        plt.grid(True)
+        plt.legend()
+        plt.gcf().autofmt_xdate()
+        plt.savefig(filepath)
+        plt.close()
     print("Chart saved to", filepath)
     return filename
 
@@ -272,7 +308,7 @@ def fetch_news(symbol):
 def refine_predictions_with_openai(symbol, lstm_pred, forecast, history):
     """
     Call the OpenAI API to provide a detailed analysis of the stock.
-    The analysis includes historical performance, evaluation of the forecast, a confidence level, and market recommendations.
+    The analysis includes historical performance, an evaluation of the forecast, a confidence level, and market recommendations.
     """
     history_tail = history["Close"].tail(30).tolist()
     prompt = f"""
@@ -338,7 +374,7 @@ def process():
             "chartData": {"symbol": symbol.upper(), **chart_data},
             "news": news
         }
-        # Clear cached entry to force fresh processing on each request.
+        # Clear cache entry to force fresh processing on each request.
         cache.pop(f"{symbol.upper()}_{timeframe}", None)
         return jsonify(response)
     except Exception as e:
