@@ -9,10 +9,10 @@ from statsmodels.tsa.arima.model import ARIMA
 from datetime import datetime, timedelta
 import numpy as np
 
-# Global cache for responses (currently unused)
+# Global cache for responses (unused for fresh processing)
 cache = {}
 
-# Initialize Flask App with static folder
+# Initialize Flask app with static folder
 app = Flask(__name__, static_folder="static")
 CORS(app, resources={r"/*": {"origins": "*"}})
 
@@ -27,7 +27,7 @@ def create_dark_style():
     import mplfinance as mpf
     mc = mpf.make_marketcolors(up='green', down='red', edge='white', wick='white', volume='in')
     style = mpf.make_mpf_style(base_mpf_style='nightclouds', marketcolors=mc)
-    # Force dark background
+    # Force dark background.
     style['figure.facecolor'] = 'black'
     style['axes.facecolor'] = 'black'
     style['grid.color'] = 'dimgray'
@@ -73,7 +73,7 @@ def fetch_data(symbol, timeframe):
         df = pd.DataFrame.from_dict(ts_data, orient="index")
         df.index = pd.to_datetime(df.index)
         df.sort_index(inplace=True)
-        # For intraday, we'll keep only the "Close" price.
+        # For intraday, only use "Close" price.
         df = df.rename(columns={"4. close": "Close"})
         df["Close"] = df["Close"].astype(float)
         if df.index.tz is None:
@@ -224,14 +224,14 @@ def generate_chart(data, symbol, forecast=None, timeframe="1mo"):
     """
     Generate a chart image.
     - If OHLC data exist (daily data), create a dark-themed candlestick chart using mplfinance.
-      Overlay the forecast line so its first point connects with the last historical price.
-      If there’s a gap, draw a flat connector in yellow.
-    - For intraday data (or if OHLC is missing), fall back to a simple line chart.
+      Overlay the forecast line so that its first point connects with the last historical price.
+      If there is a gap, always draw a flat connector in yellow.
+    - For intraday data (or if OHLC data is missing), fall back to a simple line chart.
     """
     os.makedirs("static", exist_ok=True)
     filename = f"chart_{symbol.upper()}.png"
     filepath = os.path.join("static", filename)
-    
+
     if {"Open", "High", "Low", "Close"}.issubset(data.columns):
         try:
             import mplfinance as mpf
@@ -242,24 +242,27 @@ def generate_chart(data, symbol, forecast=None, timeframe="1mo"):
                                ylabel="Price", returnfig=True)
             if isinstance(ax, list):
                 ax = ax[0]
+            # Force the figure and axes to have dark backgrounds.
+            fig.patch.set_facecolor("black")
+            ax.set_facecolor("black")
+            
             if forecast and len(forecast) > 0:
                 chart_info = get_chart_data(data, forecast, timeframe)
                 forecast_dates = pd.to_datetime(chart_info["forecastDates"])
                 last_close = data["Close"].iloc[-1]
-                # Prepend the last historical point.
+                # Build forecast line ensuring the connection.
                 forecast_line = [last_close] + forecast
                 forecast_x = [data.index[-1]] + list(forecast_dates)
-                # Draw a connector line if necessary.
-                if forecast_line[0] != last_close:
-                    ax.plot([data.index[-1], forecast_x[1]], [last_close, last_close],
-                            linestyle="--", color="yellow", linewidth=2, label="Connector")
+                # Always draw a flat connector from last historical point to first forecast date.
+                ax.plot([data.index[-1], forecast_x[1]], [last_close, last_close],
+                        linestyle="--", color="yellow", linewidth=2, label="Connector")
                 ax.plot(forecast_x, forecast_line, linestyle="--", marker="o", color="cyan", linewidth=2, label="Forecast")
                 ax.legend()
-            fig.savefig(filepath)
+            fig.savefig(filepath, facecolor=fig.get_facecolor(), edgecolor='none')
             plt.close(fig)
         except Exception as e:
             print(f"Error using mplfinance for candlestick chart: {e}")
-            # Fallback to a simple line chart.
+            # Fallback: simple line chart.
             plt.style.use("seaborn-dark")
             plt.figure(figsize=(10, 5))
             plt.plot(data.index, data["Close"], label="Historical", color="blue")
