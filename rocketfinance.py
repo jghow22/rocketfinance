@@ -9,10 +9,10 @@ from statsmodels.tsa.arima.model import ARIMA
 from datetime import datetime, timedelta
 import numpy as np
 
-# Global cache for responses (unused for fresh processing)
+# Global cache for responses (currently unused)
 cache = {}
 
-# Initialize Flask app with static folder
+# Initialize Flask App with static folder
 app = Flask(__name__, static_folder="static")
 CORS(app, resources={r"/*": {"origins": "*"}})
 
@@ -25,12 +25,10 @@ openai.api_key = os.getenv("OPENAI_API_KEY")
 def create_dark_style():
     """Create a custom dark style for mplfinance."""
     import mplfinance as mpf
-    mc = mpf.make_marketcolors(up='green', down='red', edge='white', wick='white', volume='in')
-    style = mpf.make_mpf_style(base_mpf_style='nightclouds', marketcolors=mc)
-    # Force dark background.
-    style['figure.facecolor'] = 'black'
-    style['axes.facecolor'] = 'black'
-    style['grid.color'] = 'dimgray'
+    mc = mpf.make_marketcolors(up='lime', down='red', edge='white', wick='white', volume='in')
+    # Override with explicit dark theme parameters.
+    style = mpf.make_mpf_style(base_mpf_style='nightclouds', marketcolors=mc,
+                               facecolor='black', edgecolor='black', gridcolor='dimgray')
     return style
 
 # ---------------------------
@@ -73,7 +71,7 @@ def fetch_data(symbol, timeframe):
         df = pd.DataFrame.from_dict(ts_data, orient="index")
         df.index = pd.to_datetime(df.index)
         df.sort_index(inplace=True)
-        # For intraday, only use "Close" price.
+        # For intraday, use only the "Close" price.
         df = df.rename(columns={"4. close": "Close"})
         df["Close"] = df["Close"].astype(float)
         if df.index.tz is None:
@@ -223,26 +221,27 @@ def get_chart_data(data, forecast, timeframe):
 def generate_chart(data, symbol, forecast=None, timeframe="1mo"):
     """
     Generate a chart image.
-    - If OHLC data exist (daily data), create a dark-themed candlestick chart using mplfinance.
-      Overlay the forecast line so that its first point connects with the last historical price.
-      If there is a gap, always draw a flat connector in yellow.
-    - For intraday data (or if OHLC data is missing), fall back to a simple line chart.
+    - If OHLC columns are present (daily data), create a dark-themed candlestick chart using mplfinance.
+      The forecast line is overlaid so its first point connects to the last historical close.
+      If there’s a gap, a flat connector (yellow) is drawn.
+    - For intraday data (or if OHLC is missing), fall back to a simple dark line chart.
     """
     os.makedirs("static", exist_ok=True)
     filename = f"chart_{symbol.upper()}.png"
     filepath = os.path.join("static", filename)
-
+    
     if {"Open", "High", "Low", "Close"}.issubset(data.columns):
         try:
             import mplfinance as mpf
             data_filled = data.ffill()
             dark_style = create_dark_style()
+            # Plot the candlestick chart using the custom dark style.
             fig, ax = mpf.plot(data_filled, type='candle', style=dark_style,
                                title=f"{symbol.upper()} Candlestick Chart",
                                ylabel="Price", returnfig=True)
             if isinstance(ax, list):
                 ax = ax[0]
-            # Force the figure and axes to have dark backgrounds.
+            # Force the figure and axes to dark colors.
             fig.patch.set_facecolor("black")
             ax.set_facecolor("black")
             
@@ -250,10 +249,10 @@ def generate_chart(data, symbol, forecast=None, timeframe="1mo"):
                 chart_info = get_chart_data(data, forecast, timeframe)
                 forecast_dates = pd.to_datetime(chart_info["forecastDates"])
                 last_close = data["Close"].iloc[-1]
-                # Build forecast line ensuring the connection.
+                # Prepend last historical point.
                 forecast_line = [last_close] + forecast
                 forecast_x = [data.index[-1]] + list(forecast_dates)
-                # Always draw a flat connector from last historical point to first forecast date.
+                # Always draw a flat connector from last historical point to the first forecast date.
                 ax.plot([data.index[-1], forecast_x[1]], [last_close, last_close],
                         linestyle="--", color="yellow", linewidth=2, label="Connector")
                 ax.plot(forecast_x, forecast_line, linestyle="--", marker="o", color="cyan", linewidth=2, label="Forecast")
