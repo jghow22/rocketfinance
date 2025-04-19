@@ -45,14 +45,14 @@ def fetch_data(symbol, timeframe):
     """
     Fetch stock data for a symbol from Alpha Vantage.
     - For intraday ("5min", "30min", "2h", "4h"), uses TIME_SERIES_INTRADAY.
-      For "2h" and "4h", fetches "60min" data then resamples.
+    For "2h" and "4h", fetches "60min" data then resamples.
     - For daily ("1day", "7day", "1mo", "3mo", "1yr"), uses TIME_SERIES_DAILY
-      and returns OHLC data, filtered by an extended window.
+    and returns OHLC data, filtered by an extended window.
     """
     api_key = os.getenv("ALPHAVANTAGE_API_KEY")
     if not api_key:
         raise ValueError("Alpha Vantage API key not set in environment variable ALPHAVANTAGE_API_KEY")
-    
+
     intraday_options = ["5min", "30min", "2h", "4h"]
     if timeframe in intraday_options:
         base_interval = "60min" if timeframe in ["2h", "4h"] else timeframe
@@ -200,9 +200,24 @@ def arima_prediction(model):
 def get_chart_data(data, forecast, timeframe):
     """
     Build raw chart data arrays including ISO-formatted historical and forecast dates and corresponding values.
+    Now includes OHLC data for candlestick charts if available.
     """
     historical_dates = data.index.strftime("%Y-%m-%dT%H:%M:%SZ").tolist()
     historical_values = data["Close"].tolist()
+    
+    # Add OHLC data if available
+    ohlc_data = None
+    if {"Open", "High", "Low", "Close"}.issubset(data.columns):
+        ohlc_data = [
+            {
+                "open": float(row["Open"]),
+                "high": float(row["High"]),
+                "low": float(row["Low"]),
+                "close": float(row["Close"])
+            }
+            for _, row in data.iterrows()
+        ]
+    
     last_date = data.index[-1]
     if timeframe.endswith("min"):
         minutes = int(timeframe.replace("min", ""))
@@ -224,12 +239,19 @@ def get_chart_data(data, forecast, timeframe):
             periods=len(forecast),
             freq="B"
         ).strftime("%Y-%m-%dT%H:%M:%SZ").tolist()
-    return {
+    
+    result = {
         "historicalDates": historical_dates,
         "historicalValues": historical_values,
         "forecastDates": forecast_dates,
         "forecastValues": forecast
     }
+    
+    # Include OHLC data if available
+    if ohlc_data:
+        result["ohlc"] = ohlc_data
+    
+    return result
 
 # ---------------------------
 # Chart Generation with Candlestick + Continuous Forecast
@@ -238,14 +260,14 @@ def generate_chart(data, symbol, forecast=None, timeframe="1mo"):
     """
     Generate a chart image.
     - If OHLC columns are present (daily data), create a dark-themed candlestick chart using mplfinance.
-      The forecast line is overlaid so its first point connects to the last historical close.
-      A flat connector (yellow) bridges any gap.
+    The forecast line is overlaid so its first point connects to the last historical close.
+    A flat connector (yellow) bridges any gap.
     - For intraday data (or if OHLC is missing), fall back to a simple dark line chart.
     """
     os.makedirs("static", exist_ok=True)
     filename = f"chart_{symbol.upper()}.png"
     filepath = os.path.join("static", filename)
-    
+
     # Check for OHLC => use candlestick
     if {"Open", "High", "Low", "Close"}.issubset(data.columns):
         try:
@@ -265,7 +287,6 @@ def generate_chart(data, symbol, forecast=None, timeframe="1mo"):
             ax = axes[0] if isinstance(axes, (list, tuple)) else axes
             fig.patch.set_facecolor("black")
             ax.set_facecolor("black")
-            
             # Overlay forecast
             if forecast and len(forecast) > 0:
                 chart_info = get_chart_data(data_filled, forecast, timeframe)
@@ -284,7 +305,6 @@ def generate_chart(data, symbol, forecast=None, timeframe="1mo"):
                     linestyle="--", marker="o", color="cyan", linewidth=2, label="Forecast"
                 )
                 ax.legend()
-            
             fig.savefig(filepath, facecolor=fig.get_facecolor(), edgecolor='none')
             plt.close(fig)
         except Exception as e:
@@ -318,7 +338,6 @@ def generate_chart(data, symbol, forecast=None, timeframe="1mo"):
         plt.grid(color="dimgray")
         plt.savefig(filepath)
         plt.close()
-    
     print("Chart saved to", filepath)
     return filename
 
@@ -334,13 +353,13 @@ def fetch_news(symbol):
             "title": f"{symbol.upper()} surges amid market optimism",
             "source": {"name": "Reuters"},
             "summary": ("The stock experienced a significant surge today as investors reacted to strong earnings "
-                        "and positive market sentiment. Analysts note that while volatility remains, there are signs of a potential rebound.")
+                      "and positive market sentiment. Analysts note that while volatility remains, there are signs of a potential rebound.")
         },
         {
             "title": f"{symbol.upper()} announces new product line",
             "source": {"name": "Bloomberg"},
             "summary": ("In a recent press release, the company unveiled its latest product innovations, which are expected "
-                        "to drive future growth. Experts advise monitoring the market for sustained trends.")
+                      "to drive future growth. Experts advise monitoring the market for sustained trends.")
         }
     ]
     return news
@@ -352,16 +371,13 @@ def refine_predictions_with_openai(symbol, lstm_pred, forecast, history):
     history_tail = history["Close"].tail(30).tolist()
     prompt = f"""
     Analyze the following stock data for {symbol.upper()}:
-
     Historical Closing Prices (last 30 days): {history_tail}
     Forecast (next 5 periods): {forecast}
-
     Provide a detailed analysis that includes:
     - Key observations on historical performance (e.g., highs, lows, volatility, trends).
     - An evaluation of the forecast, including any observed drift or trend changes and possible reasons.
     - Your confidence level in the forecast.
     - Specific market recommendations, including risk management strategies.
-
     Format your response with clear headings and bullet points.
     """
     try:
@@ -390,7 +406,7 @@ def process():
     symbol = request.args.get("symbol", "AAPL")
     timeframe = request.args.get("timeframe", "1mo")
     print(f"Received request for symbol: {symbol} with timeframe: {timeframe}")
-    
+
     try:
         data = fetch_data(symbol, timeframe)
         intraday_options = ["5min", "30min", "2h", "4h"]
@@ -399,12 +415,12 @@ def process():
         else:
             arima_model_obj = create_arima_model(data)
             forecast = arima_prediction(arima_model_obj)
-        
+
         refined_prediction = refine_predictions_with_openai(symbol, "N/A", forecast, data)
         chart_filename = generate_chart(data, symbol, forecast=forecast, timeframe=timeframe)
         chart_data = get_chart_data(data, forecast, timeframe)
         news = fetch_news(symbol)
-        
+
         response = {
             "forecast": forecast,
             "openai_refined_prediction": refined_prediction,
