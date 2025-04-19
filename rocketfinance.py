@@ -44,10 +44,7 @@ def create_dark_style():
 def fetch_data(symbol, timeframe):
     """
     Fetch stock data for a symbol from Alpha Vantage.
-    - For intraday ("5min", "30min", "2h", "4h"), uses TIME_SERIES_INTRADAY.
-    For "2h" and "4h", fetches "60min" data then resamples.
-    - For daily ("1day", "7day", "1mo", "3mo", "1yr"), uses TIME_SERIES_DAILY
-    and returns OHLC data, filtered by an extended window.
+    Modified to ensure OHLC data for all timeframes including intraday.
     """
     api_key = os.getenv("ALPHAVANTAGE_API_KEY")
     if not api_key:
@@ -78,14 +75,29 @@ def fetch_data(symbol, timeframe):
         df = pd.DataFrame.from_dict(ts_data, orient="index")
         df.index = pd.to_datetime(df.index)
         df.sort_index(inplace=True)
-        # For intraday, use only the "Close" price.
-        df = df.rename(columns={"4. close": "Close"})
-        df["Close"] = df["Close"].astype(float)
+        
+        # Rename columns to maintain consistent OHLC structure
+        df = df.rename(columns={
+            "1. open": "Open",
+            "2. high": "High",
+            "3. low": "Low",
+            "4. close": "Close",
+        })
+        for col in ["Open", "High", "Low", "Close"]:
+            df[col] = df[col].astype(float)
+            
         if df.index.tz is None:
             df.index = df.index.tz_localize("UTC")
+            
         if timeframe in ["2h", "4h"]:
             freq = "2H" if timeframe == "2h" else "4H"
-            df = df["Close"].resample(freq).mean().dropna().to_frame()
+            # Resample with proper OHLC aggregation
+            df = df.resample(freq).agg({
+                'Open': 'first',
+                'High': 'max',
+                'Low': 'min',
+                'Close': 'last'
+            }).dropna()
             print(f"Resampled intraday data to {freq} frequency, resulting in {len(df)} rows.")
         return df
     else:
@@ -195,20 +207,70 @@ def arima_prediction(model):
         raise
 
 # ---------------------------
+# Generate OHLC data for forecast points
+# ---------------------------
+def generate_forecast_ohlc(data, forecast):
+    """
+    Generate OHLC values for forecast points using a combination of the 
+    forecasted close values and average volatility patterns from historical data.
+    """
+    # Get average daily volatility metrics from historical data
+    avg_range = (data["High"] - data["Low"]).mean()
+    avg_open_close_diff = abs(data["Open"] - data["Close"]).mean()
+    
+    # Calculate the direction of each forecast day (up or down)
+    forecast_ohlc = []
+    last_close = data["Close"].iloc[-1]
+    
+    for i, close in enumerate(forecast):
+        if i == 0:
+            prev_close = last_close
+        else:
+            prev_close = forecast[i-1]
+            
+        direction = 1 if close > prev_close else -1
+        
+        # Calculate open, high, low based on forecasted close and historical volatility
+        open_price = prev_close  # Start from previous close
+        
+        # Determine high and low based on average range and direction
+        if direction > 0:
+            # Upward day
+            high = close + (avg_range * 0.3)  # High is above close
+            low = open_price - (avg_range * 0.2)  # Low is below open
+        else:
+            # Downward day
+            high = open_price + (avg_range * 0.2)  # High is above open
+            low = close - (avg_range * 0.3)  # Low is below close
+        
+        # Ensure high is always highest, low is always lowest
+        high = max(high, open_price, close)
+        low = min(low, open_price, close)
+        
+        forecast_ohlc.append({
+            "open": float(open_price),
+            "high": float(high),
+            "low": float(low),
+            "close": float(close)
+        })
+    
+    return forecast_ohlc
+
+# ---------------------------
 # Build Raw Chart Data for Front-End
 # ---------------------------
 def get_chart_data(data, forecast, timeframe):
     """
-    Build raw chart data arrays including ISO-formatted historical and forecast dates and corresponding values.
-    Now includes OHLC data for candlestick charts if available.
+    Build raw chart data arrays including ISO-formatted historical and forecast dates and values.
+    Now includes OHLC data for both historical and forecast points.
     """
     historical_dates = data.index.strftime("%Y-%m-%dT%H:%M:%SZ").tolist()
     historical_values = data["Close"].tolist()
     
     # Add OHLC data if available
-    ohlc_data = None
+    historical_ohlc = None
     if {"Open", "High", "Low", "Close"}.issubset(data.columns):
-        ohlc_data = [
+        historical_ohlc = [
             {
                 "open": float(row["Open"]),
                 "high": float(row["High"]),
@@ -240,16 +302,21 @@ def get_chart_data(data, forecast, timeframe):
             freq="B"
         ).strftime("%Y-%m-%dT%H:%M:%SZ").tolist()
     
+    # Generate forecast OHLC data
+    forecast_ohlc = generate_forecast_ohlc(data, forecast)
+    
     result = {
         "historicalDates": historical_dates,
         "historicalValues": historical_values,
         "forecastDates": forecast_dates,
-        "forecastValues": forecast
+        "forecastValues": forecast,
+        "timeframe": timeframe
     }
     
     # Include OHLC data if available
-    if ohlc_data:
-        result["ohlc"] = ohlc_data
+    if historical_ohlc:
+        result["ohlc"] = historical_ohlc
+        result["forecastOhlc"] = forecast_ohlc
     
     return result
 
@@ -364,27 +431,56 @@ def fetch_news(symbol):
     ]
     return news
 
-def refine_predictions_with_openai(symbol, lstm_pred, forecast, history):
+def refine_predictions_with_openai(symbol, lstm_pred, forecast, history, timeframe):
     """
-    Call the OpenAI API to provide a detailed analysis of the stock.
+    Call the OpenAI API to provide a detailed analysis of the stock that's timeframe-specific.
     """
-    history_tail = history["Close"].tail(30).tolist()
+    history_tail = history["Close"].tail(min(30, len(history))).tolist()
+    
+    # Create a timeframe-specific prompt
+    if timeframe in ["5min", "30min", "2h", "4h"]:
+        time_context = f"You are analyzing intraday {timeframe} data. Focus on short-term trading strategies and intraday patterns."
+        analysis_timeframe = "intraday"
+    elif timeframe == "1day":
+        time_context = "You are analyzing daily data with a focus on very short-term price action (1-5 days)."
+        analysis_timeframe = "very short-term (1-5 days)"
+    elif timeframe == "7day":
+        time_context = "You are analyzing a week of daily data with a focus on short-term price action (1-2 weeks)."
+        analysis_timeframe = "short-term (1-2 weeks)"
+    elif timeframe == "1mo":
+        time_context = "You are analyzing a month of daily data with a focus on intermediate-term price action (2-4 weeks)."
+        analysis_timeframe = "intermediate-term (2-4 weeks)"
+    elif timeframe == "3mo":
+        time_context = "You are analyzing three months of daily data with a focus on medium-term price action (1-3 months)."
+        analysis_timeframe = "medium-term (1-3 months)"
+    else:  # 1yr
+        time_context = "You are analyzing a year of daily data with a focus on longer-term price action (3-12 months)."
+        analysis_timeframe = "longer-term (3-12 months)"
+    
     prompt = f"""
-    Analyze the following stock data for {symbol.upper()}:
-    Historical Closing Prices (last 30 days): {history_tail}
+    {time_context}
+    
+    Analyze the following stock data for {symbol.upper()} with a {timeframe} timeframe:
+    
+    Historical Closing Prices (last {len(history_tail)} periods): {history_tail}
     Forecast (next 5 periods): {forecast}
-    Provide a detailed analysis that includes:
-    - Key observations on historical performance (e.g., highs, lows, volatility, trends).
-    - An evaluation of the forecast, including any observed drift or trend changes and possible reasons.
-    - Your confidence level in the forecast.
-    - Specific market recommendations, including risk management strategies.
+    
+    Provide a detailed {analysis_timeframe} analysis that includes:
+    - Key observations on historical performance within this {timeframe} timeframe (highs, lows, volatility, trends)
+    - Technical indicators relevant to this {timeframe} timeframe
+    - An evaluation of the {timeframe} forecast, including any observed patterns
+    - Your confidence level in the {timeframe} forecast 
+    - Specific trading/investment recommendations appropriate for this {timeframe} timeframe
+    - Risk management strategies for trades at this {timeframe} timeframe
+    
     Format your response with clear headings and bullet points.
     """
+    
     try:
         response = openai.ChatCompletion.create(
             model="gpt-4-turbo",
             messages=[
-                {"role": "system", "content": "You are a stock market expert."},
+                {"role": "system", "content": f"You are a stock market expert specializing in {analysis_timeframe} analysis."},
                 {"role": "user", "content": prompt}
             ],
             timeout=15
@@ -392,7 +488,7 @@ def refine_predictions_with_openai(symbol, lstm_pred, forecast, history):
         return response["choices"][0]["message"]["content"]
     except Exception as e:
         print(f"OpenAI API error: {e}")
-        return "OpenAI analysis unavailable."
+        return f"OpenAI analysis unavailable for {timeframe} timeframe."
 
 # ---------------------------
 # Flask Routes
@@ -416,7 +512,8 @@ def process():
             arima_model_obj = create_arima_model(data)
             forecast = arima_prediction(arima_model_obj)
 
-        refined_prediction = refine_predictions_with_openai(symbol, "N/A", forecast, data)
+        # Pass the timeframe to the OpenAI analysis
+        refined_prediction = refine_predictions_with_openai(symbol, "N/A", forecast, data, timeframe)
         chart_filename = generate_chart(data, symbol, forecast=forecast, timeframe=timeframe)
         chart_data = get_chart_data(data, forecast, timeframe)
         news = fetch_news(symbol)
