@@ -409,28 +409,130 @@ def generate_chart(data, symbol, forecast=None, timeframe="1mo"):
     return filename
 
 # ---------------------------
-# News and OpenAI Analysis Functions
+# News Fetching Function
 # ---------------------------
-def fetch_news(symbol):
+def fetch_news(symbol, max_items=5):
     """
-    Return news articles for the symbol, each with a title, source, and summary.
+    Fetch actual news articles for the symbol from a news API.
+    
+    Args:
+        symbol: The stock symbol to fetch news for
+        max_items: Maximum number of news items to return
+        
+    Returns:
+        A list of news articles, each with title, source, and summary
     """
+    try:
+        # Get API key from environment variables
+        news_api_key = os.getenv("NEWSAPI_KEY")
+        
+        if not news_api_key:
+            print("Warning: NewsAPI key not set, using placeholder news")
+            return get_placeholder_news(symbol)
+        
+        # Prepare the query - search for both the symbol and company name if possible
+        company_names = {
+            "AAPL": "Apple",
+            "MSFT": "Microsoft",
+            "GOOGL": "Google",
+            "AMZN": "Amazon",
+            "META": "Meta Facebook",
+            "TSLA": "Tesla",
+            "NVDA": "NVIDIA",
+            "JPM": "JPMorgan",
+            "BAC": "Bank of America",
+            "WMT": "Walmart",
+            "DIS": "Disney",
+            "NFLX": "Netflix",
+            "XOM": "Exxon",
+            "CVX": "Chevron",
+            "PFE": "Pfizer",
+            "JNJ": "Johnson & Johnson"
+            # Add more common symbols and company names as needed
+        }
+        
+        # Construct query using both symbol and company name if available
+        query = symbol
+        if symbol.upper() in company_names:
+            query = f"{symbol} OR {company_names[symbol.upper()]}"
+        
+        # Build API request
+        url = "https://newsapi.org/v2/everything"
+        params = {
+            "q": query,
+            "apiKey": news_api_key,
+            "language": "en",
+            "sortBy": "publishedAt",
+            "pageSize": max_items
+        }
+        
+        response = requests.get(url, params=params)
+        
+        if response.status_code != 200:
+            print(f"NewsAPI error: Status {response.status_code}")
+            return get_placeholder_news(symbol)
+            
+        data = response.json()
+        
+        if data.get("status") != "ok" or "articles" not in data:
+            print(f"NewsAPI error: {data.get('message', 'Unknown error')}")
+            return get_placeholder_news(symbol)
+            
+        articles = data["articles"]
+        
+        # Format the response
+        news = []
+        for article in articles:
+            # Summarize the content if it's too long
+            content = article.get("content", article.get("description", ""))
+            if content and len(content) > 300:
+                summary = content[:297] + "..."
+            else:
+                summary = content
+                
+            news.append({
+                "title": article.get("title", ""),
+                "source": {"name": article.get("source", {}).get("name", "Unknown Source")},
+                "summary": summary,
+                "url": article.get("url", ""),
+                "publishedAt": article.get("publishedAt", "")
+            })
+            
+        return news
+    
+    except Exception as e:
+        print(f"Error fetching news: {e}")
+        return get_placeholder_news(symbol)
+
+def get_placeholder_news(symbol):
+    """Return placeholder news when the API is unavailable."""
+    current_date = datetime.now().strftime("%Y-%m-%d")
+    
     news = [
         {
-            "title": f"{symbol.upper()} surges amid market optimism",
-            "source": {"name": "Reuters"},
-            "summary": ("The stock experienced a significant surge today as investors reacted to strong earnings "
-                      "and positive market sentiment. Analysts note that while volatility remains, there are signs of a potential rebound.")
+            "title": f"{symbol.upper()} stock shows market volatility",
+            "source": {"name": "Market Insight"},
+            "summary": f"Recent trading of {symbol.upper()} demonstrates ongoing market volatility as investors respond to broader economic indicators and company-specific developments.",
+            "publishedAt": current_date
         },
         {
-            "title": f"{symbol.upper()} announces new product line",
-            "source": {"name": "Bloomberg"},
-            "summary": ("In a recent press release, the company unveiled its latest product innovations, which are expected "
-                      "to drive future growth. Experts advise monitoring the market for sustained trends.")
+            "title": f"Analysts issue updated guidance on {symbol.upper()}",
+            "source": {"name": "Financial Observer"},
+            "summary": f"Investment analysts have issued new price targets for {symbol.upper()}, reflecting revised expectations based on recent performance and forward outlook.",
+            "publishedAt": current_date
+        },
+        {
+            "title": f"{symbol.upper()} in focus as market evaluates sector trends",
+            "source": {"name": "Trading View"},
+            "summary": f"Investors are closely watching {symbol.upper()} as a possible indicator of broader sector performance. Technical analysis suggests watching key support and resistance levels.",
+            "publishedAt": current_date
         }
     ]
     return news
 
+# ---------------------------
+# OpenAI Analysis Functions
+# ---------------------------
 def refine_predictions_with_openai(symbol, lstm_pred, forecast, history, timeframe):
     """
     Call the OpenAI API to provide a detailed analysis of the stock that's timeframe-specific.
@@ -501,6 +603,8 @@ def index():
 def process():
     symbol = request.args.get("symbol", "AAPL")
     timeframe = request.args.get("timeframe", "1mo")
+    # Added new parameter for number of news items
+    news_count = int(request.args.get("news_count", "5"))
     print(f"Received request for symbol: {symbol} with timeframe: {timeframe}")
 
     try:
@@ -516,7 +620,7 @@ def process():
         refined_prediction = refine_predictions_with_openai(symbol, "N/A", forecast, data, timeframe)
         chart_filename = generate_chart(data, symbol, forecast=forecast, timeframe=timeframe)
         chart_data = get_chart_data(data, forecast, timeframe)
-        news = fetch_news(symbol)
+        news = fetch_news(symbol, max_items=news_count)
 
         response = {
             "forecast": forecast,
