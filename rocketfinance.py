@@ -8,6 +8,7 @@ import matplotlib.pyplot as plt
 from statsmodels.tsa.arima.model import ARIMA
 from datetime import datetime, timedelta
 import numpy as np
+import random
 
 # Global cache for responses (currently unused)
 cache = {}
@@ -207,16 +208,123 @@ def arima_prediction(model):
         raise
 
 # ---------------------------
+# Enhanced Forecasting System
+# ---------------------------
+def enhanced_forecast(data, periods=5, timeframe="1day"):
+    """
+    Generate enhanced forecasts with more realistic price movements showing ups and downs.
+    This combines trend forecasting with historical volatility patterns.
+    
+    Args:
+        data: Historical price data DataFrame with OHLC columns
+        periods: Number of periods to forecast
+        timeframe: The timeframe of the data ('5min', '1day', etc.)
+        
+    Returns:
+        List of forecasted closing prices
+    """
+    try:
+        # Extract the closing prices
+        close_prices = data["Close"].values
+        
+        # Determine if this is intraday or daily data
+        is_intraday = timeframe.endswith('min') or timeframe.endswith('h')
+        
+        # 1. Get base forecast (trend component)
+        if is_intraday:
+            # Use polynomial regression for intraday
+            base_forecast = linear_regression_forecast(data, periods, degree=2)
+        else:
+            # Use ARIMA for daily data
+            arima_model = create_arima_model(data)
+            base_forecast = arima_prediction(arima_model)
+        
+        # 2. Calculate volatility metrics from historical data
+        # - Recent volatility (standard deviation of returns)
+        returns = np.diff(close_prices) / close_prices[:-1]
+        recent_volatility = np.std(returns[-min(30, len(returns)):])
+        
+        # - Average daily price movement as percentage
+        avg_daily_movement = np.mean(np.abs(returns[-min(30, len(returns)):]))
+        
+        # - Calculate how often prices change direction
+        direction_changes = np.sum(np.diff(np.signbit(np.diff(close_prices))))
+        direction_change_frequency = direction_changes / (len(close_prices) - 2)
+        
+        # 3. Add realistic movement patterns
+        enhanced_forecast = []
+        last_price = close_prices[-1]
+        last_direction = 1  # Start with upward movement
+        
+        for i in range(periods):
+            # Get the trend component
+            trend = base_forecast[i]
+            
+            # Determine if we should change direction based on historical frequency
+            if np.random.random() < direction_change_frequency:
+                last_direction *= -1
+            
+            # Generate a random component based on historical volatility
+            # More volatile stocks will have larger random components
+            random_component = last_price * recent_volatility * np.random.normal(0, 1.5)
+            
+            # Combine trend and random component with direction bias
+            if i == 0:
+                # First forecast point should be closer to the last actual price
+                weight_random = 0.3
+            else:
+                # Later points can deviate more
+                weight_random = 0.6
+                
+            # Calculate the forecast with random component
+            new_price = trend + (random_component * weight_random * last_direction)
+            
+            # Ensure some minimum movement
+            min_movement = last_price * avg_daily_movement * 0.5
+            if abs(new_price - last_price) < min_movement:
+                new_price = last_price + (min_movement * last_direction)
+            
+            # Add some persistence to avoid unrealistic jumps
+            if i > 0:
+                # Pull slightly toward previous forecast point
+                new_price = 0.7 * new_price + 0.3 * enhanced_forecast[-1]
+            
+            # Ensure the forecast doesn't go negative
+            new_price = max(new_price, 0.01 * last_price)
+            
+            enhanced_forecast.append(float(new_price))
+            last_price = new_price
+        
+        # 4. Ensure the forecast maintains overall trend direction from the base forecast
+        trend_direction = 1 if base_forecast[-1] > base_forecast[0] else -1
+        actual_direction = 1 if enhanced_forecast[-1] > enhanced_forecast[0] else -1
+        
+        if trend_direction != actual_direction:
+            # Adjust the last point to maintain the overall trend direction
+            enhanced_forecast[-1] = enhanced_forecast[0] + abs(enhanced_forecast[-1] - enhanced_forecast[0]) * trend_direction
+        
+        print(f"Enhanced forecast: {enhanced_forecast}")
+        return enhanced_forecast
+        
+    except Exception as e:
+        print(f"Error in enhanced forecast: {e}")
+        # Fall back to original forecasting methods
+        if timeframe.endswith('min') or timeframe.endswith('h'):
+            return linear_regression_forecast(data, periods, degree=2)
+        else:
+            arima_model = create_arima_model(data)
+            return arima_prediction(arima_model)
+
+# ---------------------------
 # Generate OHLC data for forecast points
 # ---------------------------
 def generate_forecast_ohlc(data, forecast):
     """
-    Generate OHLC values for forecast points using a combination of the 
-    forecasted close values and average volatility patterns from historical data.
+    Generate OHLC values for forecast points with more realistic patterns.
     """
     # Get average daily volatility metrics from historical data
     avg_range = (data["High"] - data["Low"]).mean()
-    avg_open_close_diff = abs(data["Open"] - data["Close"]).mean()
+    avg_body_size = abs(data["Open"] - data["Close"]).mean()
     
     # Calculate the direction of each forecast day (up or down)
     forecast_ohlc = []
@@ -230,22 +338,38 @@ def generate_forecast_ohlc(data, forecast):
             
         direction = 1 if close > prev_close else -1
         
-        # Calculate open, high, low based on forecasted close and historical volatility
-        open_price = prev_close  # Start from previous close
+        # Calculate volatility factor - more movement for later forecast days
+        volatility_factor = 1.0 + (i * 0.1)  # Increases volatility for later days
         
-        # Determine high and low based on average range and direction
+        # Calculate open based on previous close with some random variation
+        # More realistic than always starting at previous close
+        random_open_factor = np.random.normal(0, 0.3)
+        open_deviation = avg_body_size * random_open_factor * volatility_factor
+        open_price = prev_close + open_deviation
+        
+        # Determine high and low based on average range, direction, and volatility
+        day_range = avg_range * volatility_factor * (0.8 + np.random.random() * 0.4)
+        
         if direction > 0:
             # Upward day
-            high = close + (avg_range * 0.3)  # High is above close
-            low = open_price - (avg_range * 0.2)  # Low is below open
+            body_height = abs(close - open_price)
+            upper_wick = day_range * (0.4 + np.random.random() * 0.3)  # Upper wick 40-70% of range
+            lower_wick = day_range - body_height - upper_wick
+            high = max(close, open_price) + upper_wick
+            low = min(close, open_price) - lower_wick
         else:
             # Downward day
-            high = open_price + (avg_range * 0.2)  # High is above open
-            low = close - (avg_range * 0.3)  # Low is below close
+            body_height = abs(close - open_price)
+            lower_wick = day_range * (0.4 + np.random.random() * 0.3)  # Lower wick 40-70% of range
+            upper_wick = day_range - body_height - lower_wick
+            high = max(close, open_price) + upper_wick
+            low = min(close, open_price) - lower_wick
         
-        # Ensure high is always highest, low is always lowest
-        high = max(high, open_price, close)
-        low = min(low, open_price, close)
+        # Make sure high is at least slightly higher than both open and close
+        high = max(high, open_price * 1.001, close * 1.001)
+        
+        # Make sure low is at least slightly lower than both open and close
+        low = min(low, open_price * 0.999, close * 0.999)
         
         forecast_ohlc.append({
             "open": float(open_price),
@@ -609,13 +733,10 @@ def process():
 
     try:
         data = fetch_data(symbol, timeframe)
-        intraday_options = ["5min", "30min", "2h", "4h"]
-        if timeframe in intraday_options:
-            forecast = linear_regression_forecast(data, periods=5, degree=2)
-        else:
-            arima_model_obj = create_arima_model(data)
-            forecast = arima_prediction(arima_model_obj)
-
+        
+        # Use enhanced forecasting for all timeframes
+        forecast = enhanced_forecast(data, periods=5, timeframe=timeframe)
+        
         # Pass the timeframe to the OpenAI analysis
         refined_prediction = refine_predictions_with_openai(symbol, "N/A", forecast, data, timeframe)
         chart_filename = generate_chart(data, symbol, forecast=forecast, timeframe=timeframe)
