@@ -13,6 +13,7 @@ from sklearn.ensemble import GradientBoostingRegressor
 from sklearn.svm import SVR
 from sklearn.preprocessing import StandardScaler
 import random
+import re
 
 # Global cache for responses (currently unused)
 cache = {}
@@ -23,6 +24,7 @@ CORS(app, resources={r"/*": {"origins": "*"}})
 
 # Set API keys from environment variables
 openai.api_key = os.getenv("OPENAI_API_KEY")
+
 # ---------------------------
 # Helper: Create Dark Style for mplfinance
 # ---------------------------
@@ -41,6 +43,7 @@ def create_dark_style():
         gridcolor='dimgray'
     )
     return style
+
 # ---------------------------
 # Data Fetching from Alpha Vantage
 # ---------------------------
@@ -183,6 +186,7 @@ def fetch_data(symbol, timeframe):
         if df.index.tz is None:
             df.index = df.index.tz_localize("UTC")
         return df
+
 # ---------------------------
 # Technical Indicators Calculation
 # ---------------------------
@@ -260,6 +264,7 @@ def calculate_obv(data):
         else:
             obv.append(obv[-1])
     return pd.Series(obv, index=data.index)
+
 # ---------------------------
 # Market Regime Detection
 # ---------------------------
@@ -351,7 +356,8 @@ def calculate_adx(df, period=14):
     except Exception as e:
         print(f"Error calculating ADX: {e}")
         df['ADX'] = np.nan
-        return df
+        return df   
+    
 # ---------------------------
 # Intraday Forecast using Polynomial Regression (Degree 2)
 # ---------------------------
@@ -373,7 +379,8 @@ def linear_regression_forecast(data, periods=5, degree=2):
         return forecast
     except Exception as e:
         print(f"Error in polynomial regression forecast: {e}")
-        raise
+        # Return flat forecast if error
+        return [data["Close"].iloc[-1]] * periods
 
 # ---------------------------
 # ARIMA Model for Daily Data
@@ -405,6 +412,7 @@ def arima_prediction(model):
     except Exception as e:
         print(f"ARIMA prediction error: {e}")
         raise
+
 # ---------------------------
 # Mean Reversion Forecast
 # ---------------------------
@@ -445,8 +453,8 @@ def mean_reversion_forecast(data, periods=5):
         return forecast
     except Exception as e:
         print(f"Error in mean reversion forecast: {e}")
-        # Fall back to enhanced forecast
-        return enhanced_forecast(data, periods)
+        # Fall back to a simple forecast
+        return [data["Close"].iloc[-1]] * periods
 
 # ---------------------------
 # Enhanced Forecasting System
@@ -545,15 +553,9 @@ def enhanced_forecast(data, periods=5, timeframe="1day"):
         
     except Exception as e:
         print(f"Error in enhanced forecast: {e}")
-        # Fall back to original forecasting methods
-        if timeframe.endswith('min') or timeframe.endswith('h'):
-            return linear_regression_forecast(data, periods, degree=2)
-        else:
-            try:
-                arima_model = create_arima_model(data)
-                return arima_prediction(arima_model)
-            except:
-                return linear_regression_forecast(data, periods, degree=1)
+        # Fall back to a simple forecast
+        return [data["Close"].iloc[-1]] * periods
+    
 # ---------------------------
 # Machine Learning Features and Models
 # ---------------------------
@@ -693,6 +695,7 @@ def generate_model_predictions(model, features, data, periods):
     except Exception as e:
         print(f"Error generating model predictions: {e}")
         return [data["Close"].iloc[-1]] * periods
+    
 # ---------------------------
 # Advanced Ensemble Forecast
 # ---------------------------
@@ -778,6 +781,129 @@ def ml_ensemble_forecast(data, periods=5, timeframe="1day"):
     except Exception as e:
         print(f"Error in ML ensemble forecast: {e}")
         return enhanced_forecast(data, periods, timeframe)
+    
+# ---------------------------
+# News Fetching Function
+# ---------------------------
+def fetch_news(symbol, max_items=5):
+    """
+    Fetch actual news articles for the symbol from a news API.
+    
+    Args:
+        symbol: The stock symbol to fetch news for
+        max_items: Maximum number of news items to return
+        
+    Returns:
+        A list of news articles, each with title, source, and summary
+    """
+    try:
+        # Get API key from environment variables
+        news_api_key = os.getenv("NEWSAPI_KEY")
+        
+        if not news_api_key:
+            print("Warning: NewsAPI key not set, using placeholder news")
+            return get_placeholder_news(symbol)
+        
+        # Prepare the query - search for both the symbol and company name if possible
+        company_names = {
+            "AAPL": "Apple",
+            "MSFT": "Microsoft",
+            "GOOGL": "Google",
+            "AMZN": "Amazon",
+            "META": "Meta Facebook",
+            "TSLA": "Tesla",
+            "NVDA": "NVIDIA",
+            "JPM": "JPMorgan",
+            "BAC": "Bank of America",
+            "WMT": "Walmart",
+            "DIS": "Disney",
+            "NFLX": "Netflix",
+            "XOM": "Exxon",
+            "CVX": "Chevron",
+            "PFE": "Pfizer",
+            "JNJ": "Johnson & Johnson"
+            # Add more common symbols and company names as needed
+        }
+        
+        # Construct query using both symbol and company name if available
+        query = symbol
+        if symbol.upper() in company_names:
+            query = f"{symbol} OR {company_names[symbol.upper()]}"
+        
+        # Build API request
+        url = "https://newsapi.org/v2/everything"
+        params = {
+            "q": query,
+            "apiKey": news_api_key,
+            "language": "en",
+            "sortBy": "publishedAt",
+            "pageSize": max_items
+        }
+        
+        response = requests.get(url, params=params)
+        
+        if response.status_code != 200:
+            print(f"NewsAPI error: Status {response.status_code}")
+            return get_placeholder_news(symbol)
+            
+        data = response.json()
+        
+        if data.get("status") != "ok" or "articles" not in data:
+            print(f"NewsAPI error: {data.get('message', 'Unknown error')}")
+            return get_placeholder_news(symbol)
+            
+        articles = data["articles"]
+        
+        # Format the response
+        news = []
+        for article in articles:
+            # Summarize the content if it's too long
+            content = article.get("content", article.get("description", ""))
+            if content and len(content) > 300:
+                summary = content[:297] + "..."
+            else:
+                summary = content
+                
+            news.append({
+                "title": article.get("title", ""),
+                "source": {"name": article.get("source", {}).get("name", "Unknown Source")},
+                "summary": summary,
+                "url": article.get("url", ""),
+                "publishedAt": article.get("publishedAt", "")
+            })
+            
+        return news
+    
+    except Exception as e:
+        print(f"Error fetching news: {e}")
+        return get_placeholder_news(symbol)
+
+def get_placeholder_news(symbol):
+    """Return placeholder news when the API is unavailable."""
+    current_date = datetime.now().strftime("%Y-%m-%d")
+    
+    news = [
+        {
+            "title": f"{symbol.upper()} stock shows market volatility",
+            "source": {"name": "Market Insight"},
+            "summary": f"Recent trading of {symbol.upper()} demonstrates ongoing market volatility as investors respond to broader economic indicators and company-specific developments.",
+            "publishedAt": current_date
+        },
+        {
+            "title": f"Analysts issue updated guidance on {symbol.upper()}",
+            "source": {"name": "Financial Observer"},
+            "summary": f"Investment analysts have issued new price targets for {symbol.upper()}, reflecting revised expectations based on recent performance and forward outlook.",
+            "publishedAt": current_date
+        },
+        {
+            "title": f"{symbol.upper()} in focus as market evaluates sector trends",
+            "source": {"name": "Trading View"},
+            "summary": f"Investors are closely watching {symbol.upper()} as a possible indicator of broader sector performance. Technical analysis suggests watching key support and resistance levels.",
+            "publishedAt": current_date
+        }
+    ]
+    return news
+
 # ---------------------------
 # News Sentiment Analysis
 # ---------------------------
@@ -818,7 +944,6 @@ def analyze_news_sentiment(symbol):
             response_text = response["choices"][0]["message"]["content"]
             
             # Try to find a numeric score in the response
-            import re
             matches = re.search(r"([-+]?\d*\.\d+|\d+)", response_text)
             if matches:
                 try:
@@ -838,42 +963,58 @@ def analyze_news_sentiment(symbol):
     except Exception as e:
         print(f"Error analyzing news sentiment: {e}")
         return 0
-
+    
 # ---------------------------
-# Adaptive Forecasting
+# Adaptive Forecasting and Related Functions
 # ---------------------------
 def adaptive_forecast(data, periods=5, timeframe="1day", symbol="AAPL"):
     """
     Adapt forecasting method based on detected market regime.
     """
     # Detect the current market regime
-    regime = detect_market_regime(data)
-    print(f"Detected market regime: {regime}")
+    try:
+        regime = detect_market_regime(data)
+        print(f"Detected market regime: {regime}")
+    except Exception as e:
+        print(f"Error detecting market regime: {e}")
+        regime = "unknown"
     
-    # Analyze news sentiment
-    sentiment = analyze_news_sentiment(symbol)
+    # Analyze news sentiment - with error handling
+    try:
+        sentiment = analyze_news_sentiment(symbol)
+    except Exception as e:
+        print(f"Error analyzing sentiment: {e}")
+        sentiment = 0  # Neutral sentiment as fallback
     
     # Use appropriate forecasting method based on regime
-    if regime == 'trending_up' or regime == 'trending_down':
-        # Use trend-following model with strong trend component
-        forecast = ml_ensemble_forecast(data, periods, timeframe)
-        # Strengthen the trend direction
-        trend_direction = 1 if regime == 'trending_up' else -1
-        forecast = strengthen_trend(forecast, trend_direction, strength=0.02)
-    elif regime == 'mean_reverting':
-        # Use mean-reversion model
-        forecast = mean_reversion_forecast(data, periods)
-    elif regime == 'volatile':
-        # Use high-volatility model
-        forecast = ml_ensemble_forecast(data, periods, timeframe)
-        # Increase volatility in the forecast
-        forecast = adjust_forecast_volatility(forecast, data, multiplier=1.5)
-    else:
-        # Default to ensemble forecast
-        forecast = ml_ensemble_forecast(data, periods, timeframe)
+    try:
+        if regime == 'trending_up' or regime == 'trending_down':
+            # Use trend-following model with strong trend component
+            forecast = ml_ensemble_forecast(data, periods, timeframe)
+            # Strengthen the trend direction
+            trend_direction = 1 if regime == 'trending_up' else -1
+            forecast = strengthen_trend(forecast, trend_direction, strength=0.02)
+        elif regime == 'mean_reverting':
+            # Use mean-reversion model
+            forecast = mean_reversion_forecast(data, periods)
+        elif regime == 'volatile':
+            # Use high-volatility model
+            forecast = ml_ensemble_forecast(data, periods, timeframe)
+            # Increase volatility in the forecast
+            forecast = adjust_forecast_volatility(forecast, data, multiplier=1.5)
+        else:
+            # Default to enhanced forecast (more reliable)
+            forecast = enhanced_forecast(data, periods, timeframe)
+    except Exception as e:
+        print(f"Error in adaptive forecasting: {e}")
+        # Fall back to enhanced forecast
+        forecast = enhanced_forecast(data, periods, timeframe)
     
     # Apply sentiment adjustment
-    forecast = adjust_forecast_with_sentiment(forecast, sentiment)
+    try:
+        forecast = adjust_forecast_with_sentiment(forecast, sentiment)
+    except Exception as e:
+        print(f"Error adjusting forecast with sentiment: {e}")
     
     return forecast
 
@@ -922,6 +1063,7 @@ def adjust_forecast_with_sentiment(forecast, sentiment, volatility_factor=1.0):
         result[i] = result[i-1] + (current_diff * volatility_factor)
     
     return result
+
 # ---------------------------
 # Trade Recommendations
 # ---------------------------
@@ -1138,43 +1280,47 @@ def generate_trade_recommendations(data, forecast, symbol, timeframe):
     """
     Generate concrete trade recommendations based on forecasts and market analysis.
     """
-    # Current price and forecast direction
-    current_price = data['Close'].iloc[-1]
-    forecast_direction = "bullish" if forecast[-1] > current_price else "bearish"
+    try:
+        # Current price and forecast direction
+        current_price = data['Close'].iloc[-1]
+        forecast_direction = "bullish" if forecast[-1] > current_price else "bearish"
+        
+        # Calculate key levels
+        support_levels = identify_support_levels(data)
+        resistance_levels = identify_resistance_levels(data)
+        
+        # Determine risk/reward ratio
+        risk, reward = calculate_risk_reward(current_price, forecast, support_levels, resistance_levels)
+        
+        # Calculate confidence score (0-100)
+        confidence = calculate_forecast_confidence(data, forecast, timeframe)
+        
+        # Generate position size recommendation based on volatility and confidence
+        position_size = recommend_position_size(data, confidence)
+        
+        # Generate stop loss and take profit levels
+        stop_loss = calculate_stop_loss(current_price, forecast_direction, support_levels)
+        take_profit = calculate_take_profit(current_price, forecast_direction, resistance_levels, forecast)
+        
+        recommendations = {
+            "direction": forecast_direction,
+            "confidence": confidence,
+            "entry_price": current_price,
+            "stop_loss": stop_loss,
+            "take_profit": take_profit,
+            "risk_reward_ratio": reward / risk if risk > 0 else 0,
+            "recommended_position_size": position_size,
+            "key_support_levels": support_levels[:2],  # Top 2 support levels
+            "key_resistance_levels": resistance_levels[:2],  # Top 2 resistance levels
+            "timeframe": timeframe,
+            "notes": generate_recommendation_notes(forecast_direction, confidence, risk, reward, timeframe)
+        }
+        
+        return recommendations
+    except Exception as e:
+        print(f"Error generating trade recommendations: {e}")
+        return {"status": "unavailable", "error": str(e)}
     
-    # Calculate key levels
-    support_levels = identify_support_levels(data)
-    resistance_levels = identify_resistance_levels(data)
-    
-    # Determine risk/reward ratio
-    risk, reward = calculate_risk_reward(current_price, forecast, support_levels, resistance_levels)
-    
-    # Calculate confidence score (0-100)
-    confidence = calculate_forecast_confidence(data, forecast, timeframe)
-    
-    # Generate position size recommendation based on volatility and confidence
-    position_size = recommend_position_size(data, confidence)
-    
-    # Generate stop loss and take profit levels
-    stop_loss = calculate_stop_loss(current_price, forecast_direction, support_levels)
-    take_profit = calculate_take_profit(current_price, forecast_direction, resistance_levels, forecast)
-    
-    recommendations = {
-        "direction": forecast_direction,
-        "confidence": confidence,
-        "entry_price": current_price,
-        "stop_loss": stop_loss,
-        "take_profit": take_profit,
-        "risk_reward_ratio": reward / risk if risk > 0 else 0,
-        "recommended_position_size": position_size,
-        "key_support_levels": support_levels[:2],  # Top 2 support levels
-        "key_resistance_levels": resistance_levels[:2],  # Top 2 resistance levels
-        "timeframe": timeframe,
-        "notes": generate_recommendation_notes(forecast_direction, confidence, risk, reward, timeframe)
-    }
-    
-    return recommendations
-
 # ---------------------------
 # Generate OHLC data for forecast points
 # ---------------------------
@@ -1239,6 +1385,7 @@ def generate_forecast_ohlc(data, forecast):
         })
     
     return forecast_ohlc
+
 # ---------------------------
 # Build Raw Chart Data for Front-End
 # ---------------------------
@@ -1307,51 +1454,30 @@ def extract_key_indicators(data_with_indicators):
     """Extract key technical indicators for the response."""
     indicators = {}
     
-    # Get the most recent values of key indicators
-    for indicator in ['RSI', 'MACD', 'ATR', 'SMA_20', 'SMA_50', 'BB_Upper', 'BB_Lower']:
-        if indicator in data_with_indicators.columns:
-            indicators[indicator] = float(data_with_indicators[indicator].iloc[-1])
-    
-    # Calculate additional standard indicators
-    if 'Close' in data_with_indicators.columns:
-        last_close = data_with_indicators['Close'].iloc[-1]
+    try:
+        # Get the most recent values of key indicators
+        for indicator in ['RSI', 'MACD', 'ATR', 'SMA_20', 'SMA_50', 'BB_Upper', 'BB_Lower']:
+            if indicator in data_with_indicators.columns:
+                indicators[indicator] = float(data_with_indicators[indicator].iloc[-1])
         
-        # Trend indicators
-        if 'SMA_20' in indicators and 'SMA_50' in indicators:
-            indicators['trend'] = 'bullish' if indicators['SMA_20'] > indicators['SMA_50'] else 'bearish'
+        # Calculate additional standard indicators
+        if 'Close' in data_with_indicators.columns:
+            last_close = data_with_indicators['Close'].iloc[-1]
+            
+            # Trend indicators
+            if 'SMA_20' in indicators and 'SMA_50' in indicators:
+                indicators['trend'] = 'bullish' if indicators['SMA_20'] > indicators['SMA_50'] else 'bearish'
+            
+            # Bollinger Band position
+            if 'BB_Upper' in indicators and 'BB_Lower' in indicators:
+                bb_position = (last_close - indicators['BB_Lower']) / (indicators['BB_Upper'] - indicators['BB_Lower'])
+                indicators['BB_position'] = float(bb_position)
         
-        # Bollinger Band position
-        if 'BB_Upper' in indicators and 'BB_Lower' in indicators:
-            bb_position = (last_close - indicators['BB_Lower']) / (indicators['BB_Upper'] - indicators['BB_Lower'])
-            indicators['BB_position'] = float(bb_position)
+        return indicators
+    except Exception as e:
+        print(f"Error extracting indicators: {e}")
+        return {}
     
-    return indicators
-def get_placeholder_news(symbol):
-    """Return placeholder news when the API is unavailable."""
-    current_date = datetime.now().strftime("%Y-%m-%d")
-    
-    news = [
-        {
-            "title": f"{symbol.upper()} stock shows market volatility",
-            "source": {"name": "Market Insight"},
-            "summary": f"Recent trading of {symbol.upper()} demonstrates ongoing market volatility as investors respond to broader economic indicators and company-specific developments.",
-            "publishedAt": current_date
-        },
-        {
-            "title": f"Analysts issue updated guidance on {symbol.upper()}",
-            "source": {"name": "Financial Observer"},
-            "summary": f"Investment analysts have issued new price targets for {symbol.upper()}, reflecting revised expectations based on recent performance and forward outlook.",
-            "publishedAt": current_date
-        },
-        {
-            "title": f"{symbol.upper()} in focus as market evaluates sector trends",
-            "source": {"name": "Trading View"},
-            "summary": f"Investors are closely watching {symbol.upper()} as a possible indicator of broader sector performance. Technical analysis suggests watching key support and resistance levels.",
-            "publishedAt": current_date
-        }
-    ]
-    return news
-
 # ---------------------------
 # Chart Generation with Candlestick + Continuous Forecast
 # ---------------------------
@@ -1363,52 +1489,68 @@ def generate_chart(data, symbol, forecast=None, timeframe="1mo"):
     A flat connector (yellow) bridges any gap.
     - For intraday data (or if OHLC is missing), fall back to a simple dark line chart.
     """
-    os.makedirs("static", exist_ok=True)
-    filename = f"chart_{symbol.upper()}.png"
-    filepath = os.path.join("static", filename)
+    try:
+        os.makedirs("static", exist_ok=True)
+        filename = f"chart_{symbol.upper()}.png"
+        filepath = os.path.join("static", filename)
 
-    # Check for OHLC => use candlestick
-    if {"Open", "High", "Low", "Close"}.issubset(data.columns):
-        try:
-            import mplfinance as mpf
-            data_filled = data.ffill()
-            dark_style = create_dark_style()
-            # Plot candlestick
-            fig, axes = mpf.plot(
-                data_filled,
-                type='candle',
-                style=dark_style,
-                title=f"{symbol.upper()} Candlestick Chart",
-                ylabel="Price",
-                returnfig=True
-            )
-            # axes may be tuple/list
-            ax = axes[0] if isinstance(axes, (list, tuple)) else axes
-            fig.patch.set_facecolor("black")
-            ax.set_facecolor("black")
-            # Overlay forecast
-            if forecast and len(forecast) > 0:
-                chart_info = get_chart_data(data_filled, forecast, timeframe)
-                f_dates = pd.to_datetime(chart_info["forecastDates"])
-                last_close = data_filled["Close"].iloc[-1]
-                # Flat connector
-                ax.plot(
-                    [data_filled.index[-1], f_dates[0]],
-                    [last_close, last_close],
-                    linestyle="--", color="yellow", linewidth=2, label="Connector"
+        # Check for OHLC => use candlestick
+        if {"Open", "High", "Low", "Close"}.issubset(data.columns):
+            try:
+                import mplfinance as mpf
+                data_filled = data.ffill()
+                dark_style = create_dark_style()
+                # Plot candlestick
+                fig, axes = mpf.plot(
+                    data_filled,
+                    type='candle',
+                    style=dark_style,
+                    title=f"{symbol.upper()} Candlestick Chart",
+                    ylabel="Price",
+                    returnfig=True
                 )
-                # Forecast line
-                ax.plot(
-                    [data_filled.index[-1]] + list(f_dates),
-                    [last_close] + forecast,
-                    linestyle="--", marker="o", color="cyan", linewidth=2, label="Forecast"
-                )
-                ax.legend()
-            fig.savefig(filepath, facecolor=fig.get_facecolor(), edgecolor='none')
-            plt.close(fig)
-        except Exception as e:
-            print(f"Error using mplfinance for candlestick chart: {e}")
-            # Fallback to dark line chart
+                # axes may be tuple/list
+                ax = axes[0] if isinstance(axes, (list, tuple)) else axes
+                fig.patch.set_facecolor("black")
+                ax.set_facecolor("black")
+                # Overlay forecast
+                if forecast and len(forecast) > 0:
+                    chart_info = get_chart_data(data_filled, forecast, timeframe)
+                    f_dates = pd.to_datetime(chart_info["forecastDates"])
+                    last_close = data_filled["Close"].iloc[-1]
+                    # Flat connector
+                    ax.plot(
+                        [data_filled.index[-1], f_dates[0]],
+                        [last_close, last_close],
+                        linestyle="--", color="yellow", linewidth=2, label="Connector"
+                    )
+                    # Forecast line
+                    ax.plot(
+                        [data_filled.index[-1]] + list(f_dates),
+                        [last_close] + forecast,
+                        linestyle="--", marker="o", color="cyan", linewidth=2, label="Forecast"
+                    )
+                    ax.legend()
+                fig.savefig(filepath, facecolor=fig.get_facecolor(), edgecolor='none')
+                plt.close(fig)
+            except Exception as e:
+                print(f"Error using mplfinance for candlestick chart: {e}")
+                # Fallback to dark line chart
+                plt.style.use("dark_background")
+                plt.figure(figsize=(10, 5))
+                plt.plot(data.index, data["Close"], label="Historical", color="white")
+                if forecast and len(forecast) > 0:
+                    dates = pd.to_datetime(get_chart_data(data, forecast, timeframe)["forecastDates"])
+                    plt.plot(dates, forecast, "--o", color="cyan", label="Forecast")
+                plt.title(f"{symbol.upper()} Prices")
+                plt.xlabel("Date")
+                plt.ylabel("Price")
+                plt.legend()
+                plt.grid(color="dimgray")
+                plt.savefig(filepath)
+                plt.close()
+        else:
+            # Intraday fallback line chart
             plt.style.use("dark_background")
             plt.figure(figsize=(10, 5))
             plt.plot(data.index, data["Close"], label="Historical", color="white")
@@ -1422,23 +1564,13 @@ def generate_chart(data, symbol, forecast=None, timeframe="1mo"):
             plt.grid(color="dimgray")
             plt.savefig(filepath)
             plt.close()
-    else:
-        # Intraday fallback line chart
-        plt.style.use("dark_background")
-        plt.figure(figsize=(10, 5))
-        plt.plot(data.index, data["Close"], label="Historical", color="white")
-        if forecast and len(forecast) > 0:
-            dates = pd.to_datetime(get_chart_data(data, forecast, timeframe)["forecastDates"])
-            plt.plot(dates, forecast, "--o", color="cyan", label="Forecast")
-        plt.title(f"{symbol.upper()} Prices")
-        plt.xlabel("Date")
-        plt.ylabel("Price")
-        plt.legend()
-        plt.grid(color="dimgray")
-        plt.savefig(filepath)
-        plt.close()
-    print("Chart saved to", filepath)
-    return filename
+        print("Chart saved to", filepath)
+        return filename
+    except Exception as e:
+        print(f"Error generating chart: {e}")
+        # Return a default filename if chart generation fails
+        return "chart_error.png"
+    
 # ---------------------------
 # OpenAI Analysis Functions
 # ---------------------------
@@ -1447,62 +1579,62 @@ def refine_predictions_with_openai(symbol, regime, forecast, history, timeframe)
     Call the OpenAI API to provide a detailed analysis of the stock that's timeframe-specific.
     Now includes market regime information.
     """
-    history_tail = history["Close"].tail(min(30, len(history))).tolist()
-    
-    # Create a timeframe-specific prompt
-    if timeframe in ["5min", "30min", "2h", "4h"]:
-        time_context = f"You are analyzing intraday {timeframe} data. Focus on short-term trading strategies and intraday patterns."
-        analysis_timeframe = "intraday"
-    elif timeframe == "1day":
-        time_context = "You are analyzing daily data with a focus on very short-term price action (1-5 days)."
-        analysis_timeframe = "very short-term (1-5 days)"
-    elif timeframe == "7day":
-        time_context = "You are analyzing a week of daily data with a focus on short-term price action (1-2 weeks)."
-        analysis_timeframe = "short-term (1-2 weeks)"
-    elif timeframe == "1mo":
-        time_context = "You are analyzing a month of daily data with a focus on intermediate-term price action (2-4 weeks)."
-        analysis_timeframe = "intermediate-term (2-4 weeks)"
-    elif timeframe == "3mo":
-        time_context = "You are analyzing three months of daily data with a focus on medium-term price action (1-3 months)."
-        analysis_timeframe = "medium-term (1-3 months)"
-    else:  # 1yr
-        time_context = "You are analyzing a year of daily data with a focus on longer-term price action (3-12 months)."
-        analysis_timeframe = "longer-term (3-12 months)"
-    
-    # Add market regime information
-    regime_context = ""
-    if regime == "trending_up":
-        regime_context = "The stock is in an uptrend. Consider bullish strategies like buying on dips or breakouts."
-    elif regime == "trending_down":
-        regime_context = "The stock is in a downtrend. Consider bearish strategies or waiting for reversal signals."
-    elif regime == "mean_reverting":
-        regime_context = "The stock is showing mean-reverting behavior. Consider counter-trend strategies."
-    elif regime == "volatile":
-        regime_context = "The stock is showing high volatility. Consider volatility-based strategies and tighter risk management."
-    
-    prompt = f"""
-    {time_context}
-    
-    Analyze the following stock data for {symbol.upper()} with a {timeframe} timeframe:
-    
-    Market Regime: {regime}
-    {regime_context}
-    
-    Historical Closing Prices (last {len(history_tail)} periods): {history_tail}
-    Forecast (next 5 periods): {forecast}
-    
-    Provide a detailed {analysis_timeframe} analysis that includes:
-    - Key observations on historical performance within this {timeframe} timeframe (highs, lows, volatility, trends)
-    - Technical indicators relevant to this {timeframe} timeframe
-    - An evaluation of the {timeframe} forecast, including any observed patterns
-    - Your confidence level in the {timeframe} forecast 
-    - Specific trading/investment recommendations appropriate for this {timeframe} timeframe
-    - Risk management strategies for trades at this {timeframe} timeframe
-    
-    Format your response with clear headings and bullet points.
-    """
-    
     try:
+        history_tail = history["Close"].tail(min(30, len(history))).tolist()
+        
+        # Create a timeframe-specific prompt
+        if timeframe in ["5min", "30min", "2h", "4h"]:
+            time_context = f"You are analyzing intraday {timeframe} data. Focus on short-term trading strategies and intraday patterns."
+            analysis_timeframe = "intraday"
+        elif timeframe == "1day":
+            time_context = "You are analyzing daily data with a focus on very short-term price action (1-5 days)."
+            analysis_timeframe = "very short-term (1-5 days)"
+        elif timeframe == "7day":
+            time_context = "You are analyzing a week of daily data with a focus on short-term price action (1-2 weeks)."
+            analysis_timeframe = "short-term (1-2 weeks)"
+        elif timeframe == "1mo":
+            time_context = "You are analyzing a month of daily data with a focus on intermediate-term price action (2-4 weeks)."
+            analysis_timeframe = "intermediate-term (2-4 weeks)"
+        elif timeframe == "3mo":
+            time_context = "You are analyzing three months of daily data with a focus on medium-term price action (1-3 months)."
+            analysis_timeframe = "medium-term (1-3 months)"
+        else:  # 1yr
+            time_context = "You are analyzing a year of daily data with a focus on longer-term price action (3-12 months)."
+            analysis_timeframe = "longer-term (3-12 months)"
+        
+        # Add market regime information
+        regime_context = ""
+        if regime == "trending_up":
+            regime_context = "The stock is in an uptrend. Consider bullish strategies like buying on dips or breakouts."
+        elif regime == "trending_down":
+            regime_context = "The stock is in a downtrend. Consider bearish strategies or waiting for reversal signals."
+        elif regime == "mean_reverting":
+            regime_context = "The stock is showing mean-reverting behavior. Consider counter-trend strategies."
+        elif regime == "volatile":
+            regime_context = "The stock is showing high volatility. Consider volatility-based strategies and tighter risk management."
+        
+        prompt = f"""
+        {time_context}
+        
+        Analyze the following stock data for {symbol.upper()} with a {timeframe} timeframe:
+        
+        Market Regime: {regime}
+        {regime_context}
+        
+        Historical Closing Prices (last {len(history_tail)} periods): {history_tail}
+        Forecast (next 5 periods): {forecast}
+        
+        Provide a detailed {analysis_timeframe} analysis that includes:
+        - Key observations on historical performance within this {timeframe} timeframe (highs, lows, volatility, trends)
+        - Technical indicators relevant to this {timeframe} timeframe
+        - An evaluation of the {timeframe} forecast, including any observed patterns
+        - Your confidence level in the {timeframe} forecast 
+        - Specific trading/investment recommendations appropriate for this {timeframe} timeframe
+        - Risk management strategies for trades at this {timeframe} timeframe
+        
+        Format your response with clear headings and bullet points.
+        """
+        
         response = openai.ChatCompletion.create(
             model="gpt-4-turbo",
             messages=[
@@ -1515,7 +1647,7 @@ def refine_predictions_with_openai(symbol, regime, forecast, history, timeframe)
     except Exception as e:
         print(f"OpenAI API error: {e}")
         return f"OpenAI analysis unavailable for {timeframe} timeframe."
-
+    
 # ---------------------------
 # Flask Routes
 # ---------------------------
@@ -1538,44 +1670,105 @@ def process():
         data = fetch_data(symbol, timeframe)
         
         # Add technical indicators
-        data_with_indicators = calculate_technical_indicators(data)
+        try:
+            data_with_indicators = calculate_technical_indicators(data)
+        except Exception as e:
+            print(f"Error calculating indicators: {e}")
+            data_with_indicators = data
         
         # Detect market regime
-        regime = detect_market_regime(data)
-        print(f"Detected market regime: {regime}")
+        try:
+            regime = detect_market_regime(data)
+            print(f"Detected market regime: {regime}")
+        except Exception as e:
+            print(f"Error detecting market regime: {e}")
+            regime = "unknown"
         
-        # Use adaptive forecasting based on market regime
-        forecast = adaptive_forecast(data, periods=5, timeframe=timeframe, symbol=symbol)
+        # Use enhanced forecast as a more reliable option for initial testing
+        try:
+            forecast = enhanced_forecast(data, periods=5, timeframe=timeframe)
+        except Exception as e:
+            print(f"Error in enhanced forecast, falling back to basic forecast: {e}")
+            # Fall back to basic forecast
+            if timeframe.endswith('min') or timeframe.endswith('h'):
+                forecast = linear_regression_forecast(data, periods=5, degree=2)
+            else:
+                try:
+                    arima_model = create_arima_model(data)
+                    forecast = arima_prediction(arima_model)
+                except:
+                    forecast = linear_regression_forecast(data, periods=5, degree=1)
         
-        # Get news and analyze sentiment
-        news = fetch_news(symbol, max_items=news_count)
-        sentiment = analyze_news_sentiment(symbol)
-        print(f"News sentiment: {sentiment}")
+        # Get news - with error handling
+        try:
+            news = fetch_news(symbol, max_items=news_count)
+        except Exception as e:
+            print(f"Error fetching news: {e}")
+            # Create placeholder news if fetch_news fails
+            news = [
+                {
+                    "title": f"{symbol} stock analysis",
+                    "source": {"name": "Trading System"},
+                    "summary": "News data temporarily unavailable. Please check back later.",
+                    "publishedAt": datetime.now().strftime("%Y-%m-%d")
+                }
+            ]
         
-        # Generate OpenAI analysis with additional context
-        refined_prediction = refine_predictions_with_openai(symbol, regime, forecast, data_with_indicators, timeframe)
+        # Get sentiment with error handling
+        try:
+            sentiment = analyze_news_sentiment(symbol)
+        except Exception as e:
+            print(f"Error analyzing sentiment: {e}")
+            sentiment = 0
+        
+        # Generate OpenAI analysis
+        try:
+            refined_prediction = refine_predictions_with_openai(symbol, regime, forecast, data_with_indicators, timeframe)
+        except Exception as e:
+            print(f"Error in OpenAI analysis: {e}")
+            refined_prediction = f"Analysis temporarily unavailable. The forecast for {symbol} shows a {'bullish' if forecast[-1] > data['Close'].iloc[-1] else 'bearish'} trend."
         
         # Generate trade recommendations
-        trade_recommendations = generate_trade_recommendations(data, forecast, symbol, timeframe)
+        try:
+            trade_recommendations = generate_trade_recommendations(data, forecast, symbol, timeframe)
+        except Exception as e:
+            print(f"Error generating trade recommendations: {e}")
+            trade_recommendations = {"status": "unavailable"}
         
         # Generate chart
         chart_filename = generate_chart(data, symbol, forecast=forecast, timeframe=timeframe)
         
-        # Prepare chart data including indicators
+        # Prepare chart data
         chart_data = get_chart_data(data, forecast, timeframe)
         
-        # Add additional data to the response
+        # Try to extract key indicators
+        try:
+            key_indicators = extract_key_indicators(data_with_indicators)
+        except Exception as e:
+            print(f"Error extracting indicators: {e}")
+            key_indicators = {}
+        
+        # Add all data to the response - handle potential exceptions
         response = {
             "forecast": forecast,
             "openai_refined_prediction": refined_prediction,
             "chart_path": chart_filename,
             "chartData": {"symbol": symbol.upper(), **chart_data},
-            "news": news,
-            "market_regime": regime,
-            "sentiment_score": sentiment,
-            "trade_recommendations": trade_recommendations,
-            "key_indicators": extract_key_indicators(data_with_indicators)
+            "news": news
         }
+        
+        # Add optional data if available
+        if regime != "unknown":
+            response["market_regime"] = regime
+        
+        if sentiment != 0:
+            response["sentiment_score"] = sentiment
+            
+        if trade_recommendations and trade_recommendations != {"status": "unavailable"}:
+            response["trade_recommendations"] = trade_recommendations
+            
+        if key_indicators:
+            response["key_indicators"] = key_indicators
         
         return jsonify(response)
     except Exception as e:
