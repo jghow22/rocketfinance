@@ -80,18 +80,22 @@ def fetch_data(symbol, timeframe):
         df.sort_index(inplace=True)
         
         # Rename columns to maintain consistent OHLC structure
-        df = df.rename(columns={
+        rename_dict = {
             "1. open": "Open",
             "2. high": "High",
             "3. low": "Low",
-            "4. close": "Close",
-            "5. volume": "Volume" if "5. volume" in df.columns else None
-        })
-        # Remove None values from rename dictionary
-        df = df.rename(columns={k: v for k, v in df.columns.items() if v is not None})
+            "4. close": "Close"
+        }
+        
+        # Add volume if it exists
+        if "5. volume" in df.columns:
+            rename_dict["5. volume"] = "Volume"
+            
+        df = df.rename(columns=rename_dict)
         
         for col in ["Open", "High", "Low", "Close"]:
-            df[col] = df[col].astype(float)
+            if col in df.columns:
+                df[col] = df[col].astype(float)
         
         if "Volume" in df.columns:
             df["Volume"] = df["Volume"].astype(float)
@@ -138,18 +142,24 @@ def fetch_data(symbol, timeframe):
         df = pd.DataFrame.from_dict(ts_data, orient="index")
         df.index = pd.to_datetime(df.index)
         df.sort_index(inplace=True)
-        df = df.rename(columns={
+        
+        # Rename columns to maintain consistent OHLC structure
+        rename_dict = {
             "1. open": "Open",
             "2. high": "High",
             "3. low": "Low",
-            "4. close": "Close",
-            "5. volume": "Volume" if "5. volume" in df.columns else None
-        })
-        # Remove None values from rename dictionary
-        df = df.rename(columns={k: v for k, v in df.columns.items() if v is not None})
+            "4. close": "Close"
+        }
+        
+        # Add volume if it exists
+        if "5. volume" in df.columns:
+            rename_dict["5. volume"] = "Volume"
+            
+        df = df.rename(columns=rename_dict)
         
         for col in ["Open", "High", "Low", "Close"]:
-            df[col] = df[col].astype(float)
+            if col in df.columns:
+                df[col] = df[col].astype(float)
             
         if "Volume" in df.columns:
             df["Volume"] = df["Volume"].astype(float)
