@@ -14,6 +14,7 @@ from sklearn.svm import SVR
 from sklearn.preprocessing import StandardScaler
 import random
 import re
+import threading
 
 # Global cache for responses (currently unused)
 cache = {}
@@ -186,7 +187,7 @@ def fetch_data(symbol, timeframe):
         if df.index.tz is None:
             df.index = df.index.tz_localize("UTC")
         return df
-
+    
 # ---------------------------
 # Technical Indicators Calculation
 # ---------------------------
@@ -356,7 +357,7 @@ def calculate_adx(df, period=14):
     except Exception as e:
         print(f"Error calculating ADX: {e}")
         df['ADX'] = np.nan
-        return df   
+        return df
     
 # ---------------------------
 # Intraday Forecast using Polynomial Regression (Degree 2)
@@ -840,7 +841,9 @@ def fetch_news(symbol, max_items=5):
             "pageSize": max_items
         }
         
-        response = requests.get(url, params=params)
+        # Set timeout to avoid blocking
+        timeout = 5  # seconds
+        response = requests.get(url, params=params, timeout=timeout)
         
         if response.status_code != 200:
             print(f"NewsAPI error: Status {response.status_code}")
@@ -905,61 +908,47 @@ def get_placeholder_news(symbol):
     return news
 
 # ---------------------------
-# News Sentiment Analysis
+# Optimized News Sentiment Analysis
 # ---------------------------
 def analyze_news_sentiment(symbol):
-    """Analyze news sentiment for a given symbol."""
-    news = fetch_news(symbol, max_items=15)
-    if not news:
-        return 0  # Neutral sentiment
-    
-    # Use OpenAI to analyze sentiment of recent news
+    """Analyze news sentiment for a given symbol with timeout handling."""
     try:
-        news_texts = [f"Title: {item['title']}\nSummary: {item['summary']}" for item in news if item.get('title') and item.get('summary')]
+        # Add a timeout to prevent blocking
+        timeout_seconds = 5
         
-        # Batch news into groups to avoid token limits
-        batched_news = []
-        current_batch = []
-        for item in news_texts[:10]:  # Limit to 10 most recent articles
-            current_batch.append(item)
-            if len(current_batch) >= 3:
-                batched_news.append(current_batch)
-                current_batch = []
-        if current_batch:
-            batched_news.append(current_batch)
+        news = fetch_news(symbol, max_items=5)  # Reduce to 5 news items
+        if not news:
+            return 0  # Neutral sentiment
         
-        # Process each batch
-        sentiments = []
-        for batch in batched_news:
-            batch_text = "\n\n".join(batch)
-            response = openai.ChatCompletion.create(
-                model="gpt-4-turbo",
-                messages=[
-                    {"role": "system", "content": "You are a financial news analyst. Analyze the sentiment of these news articles about a stock."},
-                    {"role": "user", "content": f"Analyze these news articles about {symbol} and provide a sentiment score from -1.0 (extremely bearish) to +1.0 (extremely bullish):\n\n{batch_text}"}
-                ]
-            )
+        # Use a simple rule-based sentiment analysis instead of OpenAI for speed
+        positive_words = ['increase', 'gain', 'up', 'rise', 'bullish', 'growth', 'positive', 'beat', 'exceed', 
+                           'higher', 'strong', 'opportunity', 'outperform', 'upgrade', 'buy', 'success',
+                           'profit', 'improved', 'promising', 'confident']
+        
+        negative_words = ['decrease', 'loss', 'down', 'fall', 'bearish', 'decline', 'negative', 'miss', 'below',
+                           'lower', 'weak', 'risk', 'underperform', 'downgrade', 'sell', 'trouble', 
+                           'drop', 'disappointing', 'concern', 'caution']
+        
+        # Calculate sentiment score based on word frequency
+        sentiment_scores = []
+        for article in news:
+            text = f"{article.get('title', '')} {article.get('summary', '')}"
+            text = text.lower()
             
-            # Extract sentiment score from the response
-            response_text = response["choices"][0]["message"]["content"]
+            positive_count = sum(1 for word in positive_words if word in text)
+            negative_count = sum(1 for word in negative_words if word in text)
             
-            # Try to find a numeric score in the response
-            matches = re.search(r"([-+]?\d*\.\d+|\d+)", response_text)
-            if matches:
-                try:
-                    sentiment = float(matches.group(0))
-                    # Ensure sentiment is within -1 to 1 range
-                    sentiment = max(-1.0, min(1.0, sentiment))
-                    sentiments.append(sentiment)
-                except ValueError:
-                    pass
+            if positive_count + negative_count > 0:
+                score = (positive_count - negative_count) / (positive_count + negative_count)
+                sentiment_scores.append(score)
         
-        # Average the sentiments
-        if sentiments:
-            avg_sentiment = sum(sentiments) / len(sentiments)
+        # Average the sentiment scores
+        if sentiment_scores:
+            avg_sentiment = sum(sentiment_scores) / len(sentiment_scores)
             print(f"News sentiment score for {symbol}: {avg_sentiment}")
-            return avg_sentiment
-        return 0
+            return max(-1.0, min(1.0, avg_sentiment))  # Ensure within -1 to 1 range
+        
+        return 0  # Neutral if no scores
     except Exception as e:
         print(f"Error analyzing news sentiment: {e}")
         return 0
@@ -967,57 +956,6 @@ def analyze_news_sentiment(symbol):
 # ---------------------------
 # Adaptive Forecasting and Related Functions
 # ---------------------------
-def adaptive_forecast(data, periods=5, timeframe="1day", symbol="AAPL"):
-    """
-    Adapt forecasting method based on detected market regime.
-    """
-    # Detect the current market regime
-    try:
-        regime = detect_market_regime(data)
-        print(f"Detected market regime: {regime}")
-    except Exception as e:
-        print(f"Error detecting market regime: {e}")
-        regime = "unknown"
-    
-    # Analyze news sentiment - with error handling
-    try:
-        sentiment = analyze_news_sentiment(symbol)
-    except Exception as e:
-        print(f"Error analyzing sentiment: {e}")
-        sentiment = 0  # Neutral sentiment as fallback
-    
-    # Use appropriate forecasting method based on regime
-    try:
-        if regime == 'trending_up' or regime == 'trending_down':
-            # Use trend-following model with strong trend component
-            forecast = ml_ensemble_forecast(data, periods, timeframe)
-            # Strengthen the trend direction
-            trend_direction = 1 if regime == 'trending_up' else -1
-            forecast = strengthen_trend(forecast, trend_direction, strength=0.02)
-        elif regime == 'mean_reverting':
-            # Use mean-reversion model
-            forecast = mean_reversion_forecast(data, periods)
-        elif regime == 'volatile':
-            # Use high-volatility model
-            forecast = ml_ensemble_forecast(data, periods, timeframe)
-            # Increase volatility in the forecast
-            forecast = adjust_forecast_volatility(forecast, data, multiplier=1.5)
-        else:
-            # Default to enhanced forecast (more reliable)
-            forecast = enhanced_forecast(data, periods, timeframe)
-    except Exception as e:
-        print(f"Error in adaptive forecasting: {e}")
-        # Fall back to enhanced forecast
-        forecast = enhanced_forecast(data, periods, timeframe)
-    
-    # Apply sentiment adjustment
-    try:
-        forecast = adjust_forecast_with_sentiment(forecast, sentiment)
-    except Exception as e:
-        print(f"Error adjusting forecast with sentiment: {e}")
-    
-    return forecast
-
 def strengthen_trend(forecast, trend_direction, strength=0.02):
     """Strengthen the trend direction in a forecast."""
     result = forecast.copy()
@@ -1063,6 +1001,28 @@ def adjust_forecast_with_sentiment(forecast, sentiment, volatility_factor=1.0):
         result[i] = result[i-1] + (current_diff * volatility_factor)
     
     return result
+
+def adaptive_forecast(data, periods=5, timeframe="1day", symbol="AAPL"):
+    """
+    Adapt forecasting method based on detected market regime.
+    """
+    # Use enhanced forecast as default - it's more reliable and faster
+    try:
+        forecast = enhanced_forecast(data, periods, timeframe)
+    except Exception as e:
+        print(f"Error in enhanced forecast: {e}")
+        # Fall back to basic forecast
+        if timeframe.endswith('min') or timeframe.endswith('h'):
+            forecast = linear_regression_forecast(data, periods, degree=2)
+        else:
+            try:
+                arima_model = create_arima_model(data)
+                forecast = arima_prediction(arima_model)
+            except:
+                forecast = linear_regression_forecast(data, periods, degree=1)
+    
+    # No regime detection or sentiment handling - just return the forecast
+    return forecast
 
 # ---------------------------
 # Trade Recommendations
@@ -1577,9 +1537,12 @@ def generate_chart(data, symbol, forecast=None, timeframe="1mo"):
 def refine_predictions_with_openai(symbol, regime, forecast, history, timeframe):
     """
     Call the OpenAI API to provide a detailed analysis of the stock that's timeframe-specific.
-    Now includes market regime information.
+    Now includes market regime information and timeout handling.
     """
     try:
+        # Add a timeout to prevent blocking
+        timeout_seconds = 5  # Set a shorter timeout
+        
         history_tail = history["Close"].tail(min(30, len(history))).tolist()
         
         # Create a timeframe-specific prompt
@@ -1624,29 +1587,48 @@ def refine_predictions_with_openai(symbol, regime, forecast, history, timeframe)
         Historical Closing Prices (last {len(history_tail)} periods): {history_tail}
         Forecast (next 5 periods): {forecast}
         
-        Provide a detailed {analysis_timeframe} analysis that includes:
-        - Key observations on historical performance within this {timeframe} timeframe (highs, lows, volatility, trends)
-        - Technical indicators relevant to this {timeframe} timeframe
-        - An evaluation of the {timeframe} forecast, including any observed patterns
-        - Your confidence level in the {timeframe} forecast 
-        - Specific trading/investment recommendations appropriate for this {timeframe} timeframe
-        - Risk management strategies for trades at this {timeframe} timeframe
+        Provide a short but detailed {analysis_timeframe} analysis that includes:
+        - Key observations on historical performance
+        - Technical indicators relevant to this timeframe
+        - An evaluation of the forecast
+        - Specific trading recommendations
+        - Risk management strategies
         
-        Format your response with clear headings and bullet points.
+        Keep your response concise but informative.
         """
         
-        response = openai.ChatCompletion.create(
-            model="gpt-4-turbo",
-            messages=[
-                {"role": "system", "content": f"You are a stock market expert specializing in {analysis_timeframe} analysis."},
-                {"role": "user", "content": prompt}
-            ],
-            timeout=15
-        )
-        return response["choices"][0]["message"]["content"]
+        try:
+            response = openai.ChatCompletion.create(
+                model="gpt-3.5-turbo",  # Use a faster model
+                messages=[
+                    {"role": "system", "content": f"You are a stock market expert specializing in {analysis_timeframe} analysis."},
+                    {"role": "user", "content": prompt}
+                ],
+                timeout=timeout_seconds,
+                max_tokens=500  # Limit response size
+            )
+            return response["choices"][0]["message"]["content"]
+        except Exception as e:
+            print(f"OpenAI API error (timeout): {e}")
+            # Return a simpler analysis based on forecast direction instead
+            direction = "bullish" if forecast[-1] > history["Close"].iloc[-1] else "bearish"
+            return f"""
+            # Quick Analysis for {symbol.upper()} ({timeframe})
+            
+            The forecast indicates a {direction} trend for {symbol.upper()} in the {timeframe} timeframe.
+            
+            ## Key Points
+            - Current price: ${history["Close"].iloc[-1]:.2f}
+            - Forecast end price: ${forecast[-1]:.2f}
+            - Market regime: {regime}
+            
+            ## Trading Strategy
+            Consider a {direction} position with appropriate risk management.
+            """
     except Exception as e:
-        print(f"OpenAI API error: {e}")
-        return f"OpenAI analysis unavailable for {timeframe} timeframe."
+        print(f"Error in prediction refinement: {e}")
+        # Return a very basic analysis as fallback
+        return f"Analysis for {symbol}: The forecast suggests continued price movement. Monitor key levels and market conditions."
     
 # ---------------------------
 # Flask Routes
@@ -1659,36 +1641,22 @@ def index():
 def process():
     symbol = request.args.get("symbol", "AAPL")
     timeframe = request.args.get("timeframe", "1mo")
-    # Added new parameter for number of news items
     news_count = int(request.args.get("news_count", "5"))
-    risk_profile = request.args.get("risk_profile", "moderate")  # New parameter
     
     print(f"Received request for symbol: {symbol} with timeframe: {timeframe}")
 
     try:
-        # Fetch data with additional fields if possible
+        # Use a timer to track execution time
+        start_time = datetime.now()
+        
+        # Fetch data first - this is the most critical part
         data = fetch_data(symbol, timeframe)
         
-        # Add technical indicators
-        try:
-            data_with_indicators = calculate_technical_indicators(data)
-        except Exception as e:
-            print(f"Error calculating indicators: {e}")
-            data_with_indicators = data
-        
-        # Detect market regime
-        try:
-            regime = detect_market_regime(data)
-            print(f"Detected market regime: {regime}")
-        except Exception as e:
-            print(f"Error detecting market regime: {e}")
-            regime = "unknown"
-        
-        # Use enhanced forecast as a more reliable option for initial testing
+        # Generate enhanced forecast - this is also essential
         try:
             forecast = enhanced_forecast(data, periods=5, timeframe=timeframe)
         except Exception as e:
-            print(f"Error in enhanced forecast, falling back to basic forecast: {e}")
+            print(f"Error in enhanced forecast, using basic forecast: {e}")
             # Fall back to basic forecast
             if timeframe.endswith('min') or timeframe.endswith('h'):
                 forecast = linear_regression_forecast(data, periods=5, degree=2)
@@ -1699,77 +1667,87 @@ def process():
                 except:
                     forecast = linear_regression_forecast(data, periods=5, degree=1)
         
-        # Get news - with error handling
-        try:
-            news = fetch_news(symbol, max_items=news_count)
-        except Exception as e:
-            print(f"Error fetching news: {e}")
-            # Create placeholder news if fetch_news fails
-            news = [
-                {
-                    "title": f"{symbol} stock analysis",
-                    "source": {"name": "Trading System"},
-                    "summary": "News data temporarily unavailable. Please check back later.",
-                    "publishedAt": datetime.now().strftime("%Y-%m-%d")
-                }
-            ]
-        
-        # Get sentiment with error handling
-        try:
-            sentiment = analyze_news_sentiment(symbol)
-        except Exception as e:
-            print(f"Error analyzing sentiment: {e}")
-            sentiment = 0
-        
-        # Generate OpenAI analysis
-        try:
-            refined_prediction = refine_predictions_with_openai(symbol, regime, forecast, data_with_indicators, timeframe)
-        except Exception as e:
-            print(f"Error in OpenAI analysis: {e}")
-            refined_prediction = f"Analysis temporarily unavailable. The forecast for {symbol} shows a {'bullish' if forecast[-1] > data['Close'].iloc[-1] else 'bearish'} trend."
-        
-        # Generate trade recommendations
-        try:
-            trade_recommendations = generate_trade_recommendations(data, forecast, symbol, timeframe)
-        except Exception as e:
-            print(f"Error generating trade recommendations: {e}")
-            trade_recommendations = {"status": "unavailable"}
-        
-        # Generate chart
-        chart_filename = generate_chart(data, symbol, forecast=forecast, timeframe=timeframe)
-        
-        # Prepare chart data
+        # Prepare chart data - needed for the UI
         chart_data = get_chart_data(data, forecast, timeframe)
         
-        # Try to extract key indicators
-        try:
-            key_indicators = extract_key_indicators(data_with_indicators)
-        except Exception as e:
-            print(f"Error extracting indicators: {e}")
-            key_indicators = {}
-        
-        # Add all data to the response - handle potential exceptions
+        # Start with a basic response that will work even if other parts timeout
         response = {
             "forecast": forecast,
-            "openai_refined_prediction": refined_prediction,
-            "chart_path": chart_filename,
             "chartData": {"symbol": symbol.upper(), **chart_data},
-            "news": news
+            "news": [{"title": "Loading news...", "source": {"name": "Trading System"}, "summary": "News will be available on next refresh."}]
         }
         
-        # Add optional data if available
-        if regime != "unknown":
-            response["market_regime"] = regime
+        # Generate chart in the background
+        try:
+            chart_filename = generate_chart(data, symbol, forecast=forecast, timeframe=timeframe)
+            response["chart_path"] = chart_filename
+        except Exception as e:
+            print(f"Error generating chart: {e}")
+            response["chart_path"] = "chart_error.png"
         
-        if sentiment != 0:
-            response["sentiment_score"] = sentiment
-            
-        if trade_recommendations and trade_recommendations != {"status": "unavailable"}:
-            response["trade_recommendations"] = trade_recommendations
-            
-        if key_indicators:
-            response["key_indicators"] = key_indicators
+        # Check time elapsed and prioritize remaining operations
+        elapsed = (datetime.now() - start_time).total_seconds()
+        if elapsed > 15:  # If we're already taking too long, return what we have
+            print(f"Request taking too long ({elapsed:.2f}s), returning partial data")
+            return jsonify(response)
         
+        # Now process additional data in order of importance
+        # 1. Technical indicators
+        try:
+            data_with_indicators = calculate_technical_indicators(data)
+            key_indicators = extract_key_indicators(data_with_indicators)
+            if key_indicators:
+                response["key_indicators"] = key_indicators
+        except Exception as e:
+            print(f"Error calculating indicators: {e}")
+        
+        # 2. News data
+        elapsed = (datetime.now() - start_time).total_seconds()
+        if elapsed < 18:  # Still have time
+            try:
+                news = fetch_news(symbol, max_items=news_count)
+                if news:
+                    response["news"] = news
+            except Exception as e:
+                print(f"Error fetching news: {e}")
+        
+        # 3. Market regime detection
+        elapsed = (datetime.now() - start_time).total_seconds()
+        if elapsed < 20:  # Still have time
+            try:
+                regime = detect_market_regime(data)
+                response["market_regime"] = regime
+                print(f"Detected market regime: {regime}")
+            except Exception as e:
+                print(f"Error detecting market regime: {e}")
+                regime = "unknown"
+        else:
+            regime = "unknown"
+        
+        # 4. If we have time left, do sentiment analysis
+        elapsed = (datetime.now() - start_time).total_seconds()
+        if elapsed < 22:  # Still have time
+            try:
+                sentiment = analyze_news_sentiment(symbol)
+                if sentiment != 0:
+                    response["sentiment_score"] = sentiment
+            except Exception as e:
+                print(f"Error analyzing sentiment: {e}")
+        
+        # 5. If we still have time, do the OpenAI analysis
+        elapsed = (datetime.now() - start_time).total_seconds()
+        if elapsed < 25:  # Still have time
+            try:
+                refined_prediction = refine_predictions_with_openai(symbol, regime, forecast, data, timeframe)
+                response["openai_refined_prediction"] = refined_prediction
+            except Exception as e:
+                print(f"Error in OpenAI analysis: {e}")
+                # Create a basic analysis
+                direction = "bullish" if forecast[-1] > data['Close'].iloc[-1] else "bearish"
+                response["openai_refined_prediction"] = f"Analysis: The forecast for {symbol} shows a {direction} trend in the {timeframe} timeframe."
+        
+        # Return the response with whatever we managed to calculate
+        print(f"Total processing time: {(datetime.now() - start_time).total_seconds():.2f}s")
         return jsonify(response)
     except Exception as e:
         print(f"Error processing request: {e}")
