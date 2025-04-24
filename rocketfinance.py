@@ -15,8 +15,14 @@ from sklearn.preprocessing import StandardScaler
 import random
 import re
 import threading
+import io
+import base64
+import nltk
+from nltk.sentiment.vader import SentimentIntensityAnalyzer
+from textblob import TextBlob
+from enum import Enum
 
-# Global cache for responses (currently unused)
+# Global cache for responses
 cache = {}
 
 # Initialize Flask App with static folder
@@ -25,6 +31,12 @@ CORS(app, resources={r"/*": {"origins": "*"}})
 
 # Set API keys from environment variables
 openai.api_key = os.getenv("OPENAI_API_KEY")
+
+# Ensure NLTK resources are downloaded (for sentiment analysis)
+try:
+    nltk.data.find('vader_lexicon')
+except LookupError:
+    nltk.download('vader_lexicon')
 
 # ---------------------------
 # Helper: Create Dark Style for mplfinance
@@ -56,7 +68,16 @@ def fetch_data(symbol, timeframe):
     api_key = os.getenv("ALPHAVANTAGE_API_KEY")
     if not api_key:
         raise ValueError("Alpha Vantage API key not set in environment variable ALPHAVANTAGE_API_KEY")
-
+    
+    # Check cache first
+    cache_key = f"{symbol.upper()}:{timeframe}"
+    if cache_key in cache:
+        timestamp, data = cache[cache_key]
+        age = (datetime.now() - timestamp).total_seconds()
+        if age < 300:  # 5 minutes cache
+            print(f"Using cached data for {symbol} {timeframe} (age: {age:.1f}s)")
+            return data
+    
     intraday_options = ["5min", "30min", "2h", "4h"]
     if timeframe in intraday_options:
         base_interval = "60min" if timeframe in ["2h", "4h"] else timeframe
@@ -82,7 +103,6 @@ def fetch_data(symbol, timeframe):
         df = pd.DataFrame.from_dict(ts_data, orient="index")
         df.index = pd.to_datetime(df.index)
         df.sort_index(inplace=True)
-        
         # Rename columns to maintain consistent OHLC structure
         rename_dict = {
             "1. open": "Open",
@@ -90,23 +110,17 @@ def fetch_data(symbol, timeframe):
             "3. low": "Low",
             "4. close": "Close"
         }
-        
         # Add volume if it exists
         if "5. volume" in df.columns:
             rename_dict["5. volume"] = "Volume"
-            
         df = df.rename(columns=rename_dict)
-        
         for col in ["Open", "High", "Low", "Close"]:
             if col in df.columns:
                 df[col] = df[col].astype(float)
-        
         if "Volume" in df.columns:
             df["Volume"] = df["Volume"].astype(float)
-            
         if df.index.tz is None:
             df.index = df.index.tz_localize("UTC")
-            
         if timeframe in ["2h", "4h"]:
             freq = "2H" if timeframe == "2h" else "4H"
             # Resample with proper OHLC aggregation
@@ -118,9 +132,11 @@ def fetch_data(symbol, timeframe):
             }
             if "Volume" in df.columns:
                 agg_dict["Volume"] = 'sum'
-                
             df = df.resample(freq).agg(agg_dict).dropna()
             print(f"Resampled intraday data to {freq} frequency, resulting in {len(df)} rows.")
+        
+        # Store in cache
+        cache[cache_key] = (datetime.now(), df)
         return df
     else:
         # Daily data: use TIME_SERIES_DAILY and retain OHLC.
@@ -146,7 +162,6 @@ def fetch_data(symbol, timeframe):
         df = pd.DataFrame.from_dict(ts_data, orient="index")
         df.index = pd.to_datetime(df.index)
         df.sort_index(inplace=True)
-        
         # Rename columns to maintain consistent OHLC structure
         rename_dict = {
             "1. open": "Open",
@@ -154,20 +169,15 @@ def fetch_data(symbol, timeframe):
             "3. low": "Low",
             "4. close": "Close"
         }
-        
         # Add volume if it exists
         if "5. volume" in df.columns:
             rename_dict["5. volume"] = "Volume"
-            
         df = df.rename(columns=rename_dict)
-        
         for col in ["Open", "High", "Low", "Close"]:
             if col in df.columns:
                 df[col] = df[col].astype(float)
-            
         if "Volume" in df.columns:
             df["Volume"] = df["Volume"].astype(float)
-            
         now = datetime.now()
         if timeframe == "1day":
             start_date = now - timedelta(days=7)
@@ -186,6 +196,9 @@ def fetch_data(symbol, timeframe):
             raise ValueError(f"No data found for symbol: {symbol} in the specified timeframe")
         if df.index.tz is None:
             df.index = df.index.tz_localize("UTC")
+        
+        # Store in cache
+        cache[cache_key] = (datetime.now(), df)
         return df
     
 # ---------------------------
@@ -194,46 +207,37 @@ def fetch_data(symbol, timeframe):
 def calculate_technical_indicators(data):
     """Calculate key technical indicators for forecasting enhancement."""
     df = data.copy()
-    
     # Moving Averages
     df['SMA_20'] = df['Close'].rolling(window=min(20, len(df))).mean()
     df['SMA_50'] = df['Close'].rolling(window=min(50, len(df))).mean()
     df['EMA_12'] = df['Close'].ewm(span=min(12, len(df)), adjust=False).mean()
     df['EMA_26'] = df['Close'].ewm(span=min(26, len(df)), adjust=False).mean()
-    
     # MACD
     df['MACD'] = df['EMA_12'] - df['EMA_26']
     df['MACD_Signal'] = df['MACD'].ewm(span=min(9, len(df)), adjust=False).mean()
     df['MACD_Hist'] = df['MACD'] - df['MACD_Signal']
-    
     # RSI (Relative Strength Index)
     delta = df['Close'].diff()
     gain = delta.where(delta > 0, 0)
     loss = -delta.where(delta < 0, 0)
     avg_gain = gain.rolling(window=min(14, len(df))).mean()
     avg_loss = loss.rolling(window=min(14, len(df))).mean()
-    
     # Handle division by zero
     avg_loss = avg_loss.replace(0, np.nan)
     rs = avg_gain / avg_loss
     rs = rs.replace(np.nan, 0)
-    
     df['RSI'] = 100 - (100 / (1 + rs))
-    
     # Bollinger Bands
     window = min(20, len(df))
     df['BB_Middle'] = df['Close'].rolling(window=window).mean()
     std_dev = df['Close'].rolling(window=window).std()
     df['BB_Upper'] = df['BB_Middle'] + (std_dev * 2)
     df['BB_Lower'] = df['BB_Middle'] - (std_dev * 2)
-    
     # Volatility Indicators
     df['ATR'] = calculate_atr(df, min(14, len(df)))  # Average True Range
-    
     # Volume Indicators (if volume data is available)
     if 'Volume' in df.columns:
         df['OBV'] = calculate_obv(df)  # On-Balance Volume
-    
     return df
 
 def calculate_atr(data, period=14):
@@ -242,11 +246,9 @@ def calculate_atr(data, period=14):
     df['H-L'] = df['High'] - df['Low']
     df['H-PC'] = abs(df['High'] - df['Close'].shift(1))
     df['L-PC'] = abs(df['Low'] - df['Close'].shift(1))
-    
     # Replace NaN with 0
     df['H-PC'] = df['H-PC'].fillna(0)
     df['L-PC'] = df['L-PC'].fillna(0)
-    
     df['TR'] = df[['H-L', 'H-PC', 'L-PC']].max(axis=1)
     df['ATR'] = df['TR'].rolling(window=min(period, len(df))).mean()
     return df['ATR']
@@ -255,7 +257,6 @@ def calculate_obv(data):
     """Calculate On-Balance Volume."""
     if 'Volume' not in data.columns:
         return pd.Series(0, index=data.index)
-        
     obv = [0]
     for i in range(1, len(data)):
         if data['Close'].iloc[i] > data['Close'].iloc[i-1]:
@@ -278,41 +279,34 @@ def detect_market_regime(data, window=20):
     window = min(window, len(data) // 2)
     if window < 5:
         return 'unknown'  # Not enough data
-        
     df = data.tail(window*2).copy()
-    
     # Calculate key metrics
     df['returns'] = df['Close'].pct_change()
-    
     # Calculate autocorrelation and trend
     if len(df) > 2:
         autocorr = df['returns'].dropna().autocorr(lag=1)
         trend = (df['Close'].iloc[-1] - df['Close'].iloc[0]) / df['Close'].iloc[0]
-        
-        # Calculate volatility
-        if len(df['returns'].dropna()) > 0:
-            volatility = df['returns'].std() * np.sqrt(252)  # Annualized volatility
+    # Calculate volatility
+    if len(df['returns'].dropna()) > 0:
+        volatility = df['returns'].std() * np.sqrt(252)  # Annualized volatility
+    else:
+        volatility = 0
+    # Calculate ADX (Average Directional Index) to measure trend strength
+    df = calculate_adx(df)
+    adx_value = df['ADX'].iloc[-1] if 'ADX' in df.columns and not pd.isna(df['ADX'].iloc[-1]) else 15
+    # Determine regime
+    if adx_value > 25:  # Strong trend
+        if trend > 0:
+            return 'trending_up'
         else:
-            volatility = 0
-            
-        # Calculate ADX (Average Directional Index) to measure trend strength
-        df = calculate_adx(df)
-        adx_value = df['ADX'].iloc[-1] if 'ADX' in df.columns and not pd.isna(df['ADX'].iloc[-1]) else 15
-        
-        # Determine regime
-        if adx_value > 25:  # Strong trend
-            if trend > 0:
-                return 'trending_up'
-            else:
-                return 'trending_down'
-        elif autocorr < -0.2:  # Negative autocorrelation suggests mean reversion
-            return 'mean_reverting'
-        elif volatility > 0.3:  # High volatility
-            return 'volatile'
-        else:
-            return 'unknown'
+            return 'trending_down'
+    elif autocorr < -0.2:  # Negative autocorrelation suggests mean reversion
+        return 'mean_reverting'
+    elif volatility > 0.3:  # High volatility
+        return 'volatile'
     else:
         return 'unknown'
+    
 
 def calculate_adx(df, period=14):
     """Calculate Average Directional Index."""
@@ -321,38 +315,29 @@ def calculate_adx(df, period=14):
     if period < 2:
         df['ADX'] = pd.Series(np.nan, index=df.index)
         return df
-        
     # Calculate +DM, -DM, +DI, -DI, and ADX
     try:
         df['tr1'] = abs(df['High'] - df['Low'])
         df['tr2'] = abs(df['High'] - df['Close'].shift(1))
         df['tr3'] = abs(df['Low'] - df['Close'].shift(1))
         df['TR'] = df[['tr1', 'tr2', 'tr3']].max(axis=1)
-        
         df['+DM'] = np.where((df['High'] - df['High'].shift(1)) > (df['Low'].shift(1) - df['Low']),
-                             np.maximum(df['High'] - df['High'].shift(1), 0), 0)
+                              np.maximum(df['High'] - df['High'].shift(1), 0), 0)
         df['-DM'] = np.where((df['Low'].shift(1) - df['Low']) > (df['High'] - df['High'].shift(1)),
-                             np.maximum(df['Low'].shift(1) - df['Low'], 0), 0)
-        
+                              np.maximum(df['Low'].shift(1) - df['Low'], 0), 0)
         df['TR14'] = df['TR'].rolling(window=period).sum()
         df['+DM14'] = df['+DM'].rolling(window=period).sum()
         df['-DM14'] = df['-DM'].rolling(window=period).sum()
-        
         # Handle division by zero
         df['TR14'] = df['TR14'].replace(0, np.nan)
-        
         df['+DI14'] = 100 * df['+DM14'] / df['TR14']
         df['-DI14'] = 100 * df['-DM14'] / df['TR14']
-        
         # Handle division by zero and NaN values
         sum_di = df['+DI14'] + df['-DI14']
         sum_di = sum_di.replace(0, np.nan)
-        
         df['DX'] = 100 * abs(df['+DI14'] - df['-DI14']) / sum_di
         df['DX'] = df['DX'].fillna(0)  # Replace NaN with 0
-        
         df['ADX'] = df['DX'].rolling(window=period).mean()
-        
         return df
     except Exception as e:
         print(f"Error calculating ADX: {e}")
@@ -427,29 +412,22 @@ def mean_reversion_forecast(data, periods=5):
         mean_price = data["Close"].rolling(window=window).mean().iloc[-1]
         current_price = data["Close"].iloc[-1]
         deviation = current_price - mean_price
-        
         # Calculate the mean reversion strength based on how far price is from mean
         std_dev = data["Close"].rolling(window=window).std().iloc[-1]
         reversion_speed = min(0.3, abs(deviation) / (2 * std_dev)) if std_dev > 0 else 0.1
-        
         # Generate a reverting forecast
         forecast = []
         last_price = current_price
-        
         for i in range(periods):
             # Calculate reversion component
             reversion = (mean_price - last_price) * reversion_speed
-            
             # Add some noise
             noise = std_dev * np.random.normal(0, 0.3)
-            
             # Calculate new price
             new_price = last_price + reversion + noise
-            
             # Update for next iteration
             forecast.append(float(new_price))
             last_price = new_price
-            
         print(f"Mean reversion forecast: {forecast}")
         return forecast
     except Exception as e:
@@ -468,10 +446,8 @@ def enhanced_forecast(data, periods=5, timeframe="1day"):
     try:
         # Extract the closing prices
         close_prices = data["Close"].values
-        
         # Determine if this is intraday or daily data
         is_intraday = timeframe.endswith('min') or timeframe.endswith('h')
-        
         # 1. Get base forecast (trend component)
         if is_intraday:
             # Use polynomial regression for intraday
@@ -484,36 +460,28 @@ def enhanced_forecast(data, periods=5, timeframe="1day"):
             except:
                 # Fall back to linear regression if ARIMA fails
                 base_forecast = linear_regression_forecast(data, periods, degree=1)
-        
         # 2. Calculate volatility metrics from historical data
         # - Recent volatility (standard deviation of returns)
         returns = np.diff(close_prices) / close_prices[:-1]
         recent_volatility = np.std(returns[-min(30, len(returns)):])
-        
         # - Average daily price movement as percentage
         avg_daily_movement = np.mean(np.abs(returns[-min(30, len(returns)):]))
-        
         # - Calculate how often prices change direction
         direction_changes = np.sum(np.diff(np.signbit(np.diff(close_prices))))
         direction_change_frequency = direction_changes / (len(close_prices) - 2) if len(close_prices) > 2 else 0.3
-        
         # 3. Add realistic movement patterns
         enhanced_forecast = []
         last_price = close_prices[-1]
         last_direction = 1  # Start with upward movement
-        
         for i in range(periods):
             # Get the trend component
             trend = base_forecast[i]
-            
             # Determine if we should change direction based on historical frequency
             if np.random.random() < direction_change_frequency:
                 last_direction *= -1
-            
             # Generate a random component based on historical volatility
             # More volatile stocks will have larger random components
             random_component = last_price * recent_volatility * np.random.normal(0, 1.5)
-            
             # Combine trend and random component with direction bias
             if i == 0:
                 # First forecast point should be closer to the last actual price
@@ -521,37 +489,28 @@ def enhanced_forecast(data, periods=5, timeframe="1day"):
             else:
                 # Later points can deviate more
                 weight_random = 0.6
-                
             # Calculate the forecast with random component
             new_price = trend + (random_component * weight_random * last_direction)
-            
             # Ensure some minimum movement
             min_movement = last_price * avg_daily_movement * 0.5
             if abs(new_price - last_price) < min_movement:
                 new_price = last_price + (min_movement * last_direction)
-            
             # Add some persistence to avoid unrealistic jumps
             if i > 0:
                 # Pull slightly toward previous forecast point
                 new_price = 0.7 * new_price + 0.3 * enhanced_forecast[-1]
-            
             # Ensure the forecast doesn't go negative
             new_price = max(new_price, 0.01 * last_price)
-            
             enhanced_forecast.append(float(new_price))
             last_price = new_price
-        
         # 4. Ensure the forecast maintains overall trend direction from the base forecast
         trend_direction = 1 if base_forecast[-1] > base_forecast[0] else -1
         actual_direction = 1 if enhanced_forecast[-1] > enhanced_forecast[0] else -1
-        
         if trend_direction != actual_direction:
             # Adjust the last point to maintain the overall trend direction
             enhanced_forecast[-1] = enhanced_forecast[0] + abs(enhanced_forecast[-1] - enhanced_forecast[0]) * trend_direction
-        
         print(f"Enhanced forecast: {enhanced_forecast}")
         return enhanced_forecast
-        
     except Exception as e:
         print(f"Error in enhanced forecast: {e}")
         # Fall back to a simple forecast
@@ -565,29 +524,22 @@ def create_features(df, target_col='Close', window=10):
     window = min(window, len(df) // 3)
     if window < 2:
         return pd.DataFrame(index=df.index)
-        
     X = pd.DataFrame(index=df.index)
-    
     # Lagged prices
     for i in range(1, window + 1):
         X[f'lag_{i}'] = df[target_col].shift(i)
-    
     # Price changes
     X['return_1d'] = df[target_col].pct_change(1)
     X['return_5d'] = df[target_col].pct_change(window // 2)
-    
     # Rolling statistics
     X['rolling_mean'] = df[target_col].rolling(window=window).mean()
     X['rolling_std'] = df[target_col].rolling(window=window).std()
-    
     # Technical indicators if available
     for col in ['RSI', 'MACD', 'ATR', 'SMA_20', 'BB_Upper', 'BB_Lower']:
         if col in df.columns:
             X[col] = df[col]
-    
     # Fill NA values
     X = X.fillna(method='bfill').fillna(method='ffill').fillna(0)
-    
     return X
 
 def train_linear_model(X, y):
@@ -597,10 +549,8 @@ def train_linear_model(X, y):
         # Drop rows with NaN values
         X_clean = X.dropna()
         y_clean = y.loc[X_clean.index]
-        
         if len(X_clean) < 10:  # Not enough data
             return None
-            
         model.fit(X_clean, y_clean)
         return model
     except Exception as e:
@@ -614,10 +564,8 @@ def train_ridge_model(X, y):
         # Drop rows with NaN values
         X_clean = X.dropna()
         y_clean = y.loc[X_clean.index]
-        
         if len(X_clean) < 10:  # Not enough data
             return None
-            
         model.fit(X_clean, y_clean)
         return model
     except Exception as e:
@@ -631,10 +579,8 @@ def train_gb_model(X, y):
         # Drop rows with NaN values
         X_clean = X.dropna()
         y_clean = y.loc[X_clean.index]
-        
         if len(X_clean) < 10:  # Not enough data
             return None
-            
         model.fit(X_clean, y_clean)
         return model
     except Exception as e:
@@ -646,19 +592,14 @@ def train_svm_model(X, y):
     try:
         # Scale the data
         scaler = StandardScaler()
-        
         # Drop rows with NaN values
         X_clean = X.dropna()
         y_clean = y.loc[X_clean.index]
-        
         if len(X_clean) < 10:  # Not enough data
             return None
-            
         X_scaled = scaler.fit_transform(X_clean)
-        
         model = SVR(kernel='rbf', C=100, gamma=0.1)
         model.fit(X_scaled, y_clean)
-        
         # Return model and scaler as a tuple
         return (model, scaler)
     except Exception as e:
@@ -669,11 +610,9 @@ def generate_model_predictions(model, features, data, periods):
     """Generate predictions from a trained model."""
     if model is None:
         return [data["Close"].iloc[-1]] * periods
-        
     try:
         predictions = []
         current_features = features.iloc[-1:].copy()
-        
         # For SVR, we need to scale the data
         if isinstance(model, tuple) and len(model) == 2:
             svm_model, scaler = model
@@ -681,9 +620,7 @@ def generate_model_predictions(model, features, data, periods):
             last_pred = svm_model.predict(current_features_scaled)[0]
         else:
             last_pred = model.predict(current_features)[0]
-        
         predictions.append(float(last_pred))
-        
         # For simplicity, assume the features remain relatively constant
         # In a more advanced implementation, you would update the features based on each prediction
         for _ in range(1, periods):
@@ -691,12 +628,11 @@ def generate_model_predictions(model, features, data, periods):
             variation = np.random.normal(0, 0.01) * predictions[-1]
             next_pred = predictions[-1] * (1 + variation)
             predictions.append(float(next_pred))
-            
         return predictions
     except Exception as e:
         print(f"Error generating model predictions: {e}")
         return [data["Close"].iloc[-1]] * periods
-    
+
 # ---------------------------
 # Advanced Ensemble Forecast
 # ---------------------------
@@ -707,15 +643,12 @@ def ml_ensemble_forecast(data, periods=5, timeframe="1day"):
     # Only use ML ensemble if we have enough data
     if len(data) < 30:
         return enhanced_forecast(data, periods, timeframe)
-        
     try:
         # Prepare features from technical indicators
         df = calculate_technical_indicators(data)
         df = df.dropna(subset=['Close'])
-        
         # Create features from lagged prices and indicators
         features = create_features(df)
-        
         # Train different models
         models = {
             "linear": train_linear_model(features, df['Close']),
@@ -723,13 +656,11 @@ def ml_ensemble_forecast(data, periods=5, timeframe="1day"):
             "gradient_boost": train_gb_model(features, df['Close']),
             "svm": train_svm_model(features, df['Close'])
         }
-        
         # Generate predictions from each model
         predictions = {}
         for name, model in models.items():
             if model is not None:  # Only use models that were successfully trained
                 predictions[name] = generate_model_predictions(model, features, df, periods)
-        
         # Generate ARIMA and enhanced forecasts as well
         if timeframe.endswith('min') or timeframe.endswith('h'):
             predictions["poly_reg"] = linear_regression_forecast(data, periods, degree=2)
@@ -739,9 +670,7 @@ def ml_ensemble_forecast(data, periods=5, timeframe="1day"):
                 predictions["arima"] = arima_prediction(arima_model)
             except:
                 predictions["poly_reg"] = linear_regression_forecast(data, periods, degree=1)
-        
         predictions["enhanced"] = enhanced_forecast(data, periods, timeframe)
-        
         # Ensemble the predictions (weighted average)
         weights = {
             "linear": 0.1,
@@ -751,7 +680,6 @@ def ml_ensemble_forecast(data, periods=5, timeframe="1day"):
             "poly_reg" if timeframe.endswith('min') or timeframe.endswith('h') else "arima": 0.2,
             "enhanced": 0.3
         }
-        
         # Calculate weighted ensemble
         ensemble_forecast = []
         for i in range(periods):
@@ -761,22 +689,18 @@ def ml_ensemble_forecast(data, periods=5, timeframe="1day"):
                 if model_name in weights and i < len(prediction):
                     weighted_sum += prediction[i] * weights.get(model_name, 0)
                     weight_total += weights.get(model_name, 0)
-            
             # Add some realistic variation
             ensemble_val = weighted_sum / weight_total if weight_total > 0 else data["Close"].iloc[-1]
             ensemble_forecast.append(float(ensemble_val))
-        
         # Add some realistic variation like in enhanced_forecast
         last_price = data["Close"].iloc[-1]
         returns = np.diff(data["Close"].values) / data["Close"].values[:-1]
         recent_volatility = np.std(returns[-min(30, len(returns)):])
-        
         # Add controlled randomness to forecast points
         for i in range(1, len(ensemble_forecast)):
             # Add market noise based on historical volatility
             random_component = ensemble_forecast[i-1] * recent_volatility * np.random.normal(0, 0.7)
             ensemble_forecast[i] = ensemble_forecast[i] + random_component
-        
         print(f"Ensemble ML forecast: {ensemble_forecast}")
         return ensemble_forecast
     except Exception as e:
@@ -789,22 +713,18 @@ def ml_ensemble_forecast(data, periods=5, timeframe="1day"):
 def fetch_news(symbol, max_items=5):
     """
     Fetch actual news articles for the symbol from a news API.
-    
     Args:
         symbol: The stock symbol to fetch news for
         max_items: Maximum number of news items to return
-        
     Returns:
         A list of news articles, each with title, source, and summary
     """
     try:
         # Get API key from environment variables
         news_api_key = os.getenv("NEWSAPI_KEY")
-        
         if not news_api_key:
             print("Warning: NewsAPI key not set, using placeholder news")
             return get_placeholder_news(symbol)
-        
         # Prepare the query - search for both the symbol and company name if possible
         company_names = {
             "AAPL": "Apple",
@@ -825,12 +745,10 @@ def fetch_news(symbol, max_items=5):
             "JNJ": "Johnson & Johnson"
             # Add more common symbols and company names as needed
         }
-        
         # Construct query using both symbol and company name if available
         query = symbol
         if symbol.upper() in company_names:
             query = f"{symbol} OR {company_names[symbol.upper()]}"
-        
         # Build API request
         url = "https://newsapi.org/v2/everything"
         params = {
@@ -840,23 +758,17 @@ def fetch_news(symbol, max_items=5):
             "sortBy": "publishedAt",
             "pageSize": max_items
         }
-        
         # Set timeout to avoid blocking
         timeout = 5  # seconds
         response = requests.get(url, params=params, timeout=timeout)
-        
         if response.status_code != 200:
             print(f"NewsAPI error: Status {response.status_code}")
             return get_placeholder_news(symbol)
-            
         data = response.json()
-        
         if data.get("status") != "ok" or "articles" not in data:
             print(f"NewsAPI error: {data.get('message', 'Unknown error')}")
             return get_placeholder_news(symbol)
-            
         articles = data["articles"]
-        
         # Format the response
         news = []
         for article in articles:
@@ -866,7 +778,6 @@ def fetch_news(symbol, max_items=5):
                 summary = content[:297] + "..."
             else:
                 summary = content
-                
             news.append({
                 "title": article.get("title", ""),
                 "source": {"name": article.get("source", {}).get("name", "Unknown Source")},
@@ -874,9 +785,7 @@ def fetch_news(symbol, max_items=5):
                 "url": article.get("url", ""),
                 "publishedAt": article.get("publishedAt", "")
             })
-            
         return news
-    
     except Exception as e:
         print(f"Error fetching news: {e}")
         return get_placeholder_news(symbol)
@@ -884,7 +793,6 @@ def fetch_news(symbol, max_items=5):
 def get_placeholder_news(symbol):
     """Return placeholder news when the API is unavailable."""
     current_date = datetime.now().strftime("%Y-%m-%d")
-    
     news = [
         {
             "title": f"{symbol.upper()} stock shows market volatility",
@@ -908,379 +816,418 @@ def get_placeholder_news(symbol):
     return news
 
 # ---------------------------
-# Optimized News Sentiment Analysis
+# Enhanced News Sentiment Analysis
 # ---------------------------
+class EnhancedNewsSentimentAnalyzer:
+    """Enhanced news sentiment analysis using multiple NLP models."""
+    
+    def __init__(self):
+        """Initialize the sentiment analyzer."""
+        # Ensure NLTK resources are downloaded
+        try:
+            nltk.data.find('vader_lexicon')
+        except LookupError:
+            nltk.download('vader_lexicon')
+        
+        self.vader = SentimentIntensityAnalyzer()
+        # Financial-specific words and their sentiment scores
+        self.financial_lexicon = {
+            'beat': 3.0, 'exceeded': 3.0, 'surpassed': 3.0, 'outperform': 2.5,
+            'upgrade': 2.0, 'upgraded': 2.0, 'buy': 1.5, 'bullish': 2.0,
+            'miss': -3.0, 'missed': -3.0, 'disappointing': -2.5, 'underperform': -2.5,
+            'downgrade': -2.0, 'downgraded': -2.0, 'sell': -1.5, 'bearish': -2.0,
+            'investigation': -1.5, 'lawsuit': -1.5, 'sec': -1.0, 'fine': -1.0,
+            'earnings': 0.0  # Neutral unless qualified
+        }
+        # Add words to the VADER lexicon
+        for word, score in self.financial_lexicon.items():
+            self.vader.lexicon[word] = score
+    
+    def analyze_text(self, text):
+        """Analyze the sentiment of a piece of text."""
+        # Clean the text
+        text = re.sub(r'[^\w\s]', '', text)
+        
+        # Use multiple sentiment analysis techniques and average them
+        vader_scores = self.vader.polarity_scores(text)
+        textblob_analysis = TextBlob(text)
+        
+        # Combine scores (give more weight to VADER as it's finance-tuned)
+        compound_sentiment = vader_scores['compound'] * 0.7 + textblob_analysis.sentiment.polarity * 0.3
+        
+        # Convert to -1 to 1 scale
+        normalized_score = max(-1.0, min(1.0, compound_sentiment))
+        
+        # Determine sentiment category
+        if normalized_score > 0.25:
+            category = "positive"
+        elif normalized_score < -0.25:
+            category = "negative"
+        else:
+            category = "neutral"
+            
+        return {
+            "score": normalized_score,
+            "category": category,
+            "vader_score": vader_scores['compound'],
+            "textblob_score": textblob_analysis.sentiment.polarity
+        }
+    
+    def analyze_news_batch(self, news_items):
+        """Analyze a batch of news items and return detailed sentiment analysis."""
+        results = []
+        
+        for item in news_items:
+            # Combine title and summary for analysis
+            title = item.get('title', '')
+            summary = item.get('summary', '')
+            full_text = f"{title}. {summary}"
+            
+            # Get sentiment
+            sentiment = self.analyze_text(full_text)
+            
+            # Add additional context
+            result = {
+                "title": title,
+                "source": item.get('source', {}).get('name', 'Unknown'),
+                "published_at": item.get('publishedAt', None),
+                "sentiment_score": sentiment["score"],
+                "sentiment_category": sentiment["category"],
+                "url": item.get('url', '')
+            }
+            results.append(result)
+            
+        return results
+    
+    def get_overall_sentiment(self, analyzed_items):
+        """Calculate overall sentiment from a list of analyzed news items."""
+        if not analyzed_items:
+            return {"score": 0, "category": "neutral", "confidence": 0}
+            
+        # Weight more recent news higher and consider source credibility
+        total_score = 0
+        weights = 0
+        
+        current_time = datetime.now()
+        
+        for item in analyzed_items:
+            # Base weight
+            weight = 1.0
+            
+            # Adjust weight based on recency if publish date is available
+            if item.get('published_at'):
+                try:
+                    pub_date = datetime.fromisoformat(item['published_at'].replace('Z', '+00:00'))
+                    hours_ago = (current_time - pub_date).total_seconds() / 3600
+                    # Exponential decay - news from 24h ago has half the weight
+                    recency_factor = 2 ** (-hours_ago / 24)
+                    weight *= recency_factor
+                except (ValueError, TypeError):
+                    pass
+            
+            # Adjust weight based on source credibility
+            if item.get('source'):
+                credible_sources = ['Bloomberg', 'Reuters', 'Wall Street Journal', 'Financial Times', 'CNBC']
+                if any(src.lower() in item['source'].lower() for src in credible_sources):
+                    weight *= 1.5
+            
+            # Add weighted score
+            total_score += item['sentiment_score'] * weight
+            weights += weight
+        
+        if weights > 0:
+            avg_score = total_score / weights
+        else:
+            avg_score = 0
+            
+        # Determine category and confidence
+        if avg_score > 0.25:
+            category = "positive"
+        elif avg_score < -0.25:
+            category = "negative"
+        else:
+            category = "neutral"
+            
+        # Calculate confidence based on agreement between sources
+        scores = [item['sentiment_score'] for item in analyzed_items]
+        if len(scores) > 1:
+            # Standard deviation as a measure of disagreement
+            std_dev = pd.Series(scores).std()
+            # Higher standard deviation = lower confidence
+            confidence = max(0, min(100, 100 * (1 - std_dev)))
+        else:
+            confidence = 50  # Default confidence for single source
+            
+        return {
+            "score": avg_score,
+            "category": category,
+            "confidence": confidence,
+            "sources_count": len(analyzed_items)
+        }
+
 def analyze_news_sentiment(symbol):
-    """Analyze news sentiment for a given symbol with timeout handling."""
+    """Analyze news sentiment for a given symbol with advanced analysis."""
     try:
-        # Add a timeout to prevent blocking
-        timeout_seconds = 5
-        
-        news = fetch_news(symbol, max_items=5)  # Reduce to 5 news items
+        # Fetch news
+        news = fetch_news(symbol, max_items=5)
         if not news:
-            return 0  # Neutral sentiment
+            return {"score": 0, "category": "neutral", "confidence": 0}
         
-        # Use a simple rule-based sentiment analysis instead of OpenAI for speed
-        positive_words = ['increase', 'gain', 'up', 'rise', 'bullish', 'growth', 'positive', 'beat', 'exceed', 
-                           'higher', 'strong', 'opportunity', 'outperform', 'upgrade', 'buy', 'success',
-                           'profit', 'improved', 'promising', 'confident']
+        # Create analyzer instance
+        analyzer = EnhancedNewsSentimentAnalyzer()
         
-        negative_words = ['decrease', 'loss', 'down', 'fall', 'bearish', 'decline', 'negative', 'miss', 'below',
-                           'lower', 'weak', 'risk', 'underperform', 'downgrade', 'sell', 'trouble', 
-                           'drop', 'disappointing', 'concern', 'caution']
+        # Analyze all news items
+        analyzed_news = analyzer.analyze_news_batch(news)
         
-        # Calculate sentiment score based on word frequency
-        sentiment_scores = []
-        for article in news:
-            text = f"{article.get('title', '')} {article.get('summary', '')}"
-            text = text.lower()
-            
-            positive_count = sum(1 for word in positive_words if word in text)
-            negative_count = sum(1 for word in negative_words if word in text)
-            
-            if positive_count + negative_count > 0:
-                score = (positive_count - negative_count) / (positive_count + negative_count)
-                sentiment_scores.append(score)
+        # Get overall sentiment
+        overall_sentiment = analyzer.get_overall_sentiment(analyzed_news)
         
-        # Average the sentiment scores
-        if sentiment_scores:
-            avg_sentiment = sum(sentiment_scores) / len(sentiment_scores)
-            print(f"News sentiment score for {symbol}: {avg_sentiment}")
-            return max(-1.0, min(1.0, avg_sentiment))  # Ensure within -1 to 1 range
+        # Add detailed items for reference
+        overall_sentiment["items"] = analyzed_news
         
-        return 0  # Neutral if no scores
+        return overall_sentiment
     except Exception as e:
         print(f"Error analyzing news sentiment: {e}")
-        return 0
-    
-# ---------------------------
-# Adaptive Forecasting and Related Functions
-# ---------------------------
-def strengthen_trend(forecast, trend_direction, strength=0.02):
-    """Strengthen the trend direction in a forecast."""
-    result = forecast.copy()
-    for i in range(1, len(result)):
-        # Add a small percentage increase/decrease in the trend direction
-        result[i] = result[i] * (1 + (strength * i * trend_direction))
-    return result
-
-def adjust_forecast_volatility(forecast, data, multiplier=1.5):
-    """Adjust the volatility of a forecast."""
-    # Calculate historical volatility
-    returns = np.diff(data["Close"].values) / data["Close"].values[:-1]
-    volatility = np.std(returns[-min(30, len(returns)):])
-    
-    # Adjust forecast
-    result = [forecast[0]]
-    for i in range(1, len(forecast)):
-        # Add randomness scaled by volatility
-        random_component = forecast[i-1] * volatility * multiplier * np.random.normal(0, 1.0)
-        result.append(forecast[i] + random_component)
-    
-    return result
-
-def adjust_forecast_with_sentiment(forecast, sentiment, volatility_factor=1.0):
-    """Adjust forecast based on market sentiment and conditions."""
-    result = forecast.copy()
-    
-    # If sentiment is strongly positive, slightly increase later forecast points
-    if sentiment > 0.5:
-        for i in range(1, len(result)):
-            adjustment = result[i] * (0.01 * (i+1) * sentiment)
-            result[i] += adjustment
-    # If sentiment is strongly negative, slightly decrease later forecast points
-    elif sentiment < -0.5:
-        for i in range(1, len(result)):
-            adjustment = result[i] * (0.01 * (i+1) * abs(sentiment))
-            result[i] -= adjustment
-    
-    # Adjust volatility based on overall market conditions
-    for i in range(1, len(result)):
-        current_diff = result[i] - result[i-1]
-        # Scale the difference by volatility factor
-        result[i] = result[i-1] + (current_diff * volatility_factor)
-    
-    return result
-
-def adaptive_forecast(data, periods=5, timeframe="1day", symbol="AAPL"):
-    """
-    Adapt forecasting method based on detected market regime.
-    """
-    # Use enhanced forecast as default - it's more reliable and faster
-    try:
-        forecast = enhanced_forecast(data, periods, timeframe)
-    except Exception as e:
-        print(f"Error in enhanced forecast: {e}")
-        # Fall back to basic forecast
-        if timeframe.endswith('min') or timeframe.endswith('h'):
-            forecast = linear_regression_forecast(data, periods, degree=2)
-        else:
-            try:
-                arima_model = create_arima_model(data)
-                forecast = arima_prediction(arima_model)
-            except:
-                forecast = linear_regression_forecast(data, periods, degree=1)
-    
-    # No regime detection or sentiment handling - just return the forecast
-    return forecast
+        return {"score": 0, "category": "neutral", "confidence": 0}
 
 # ---------------------------
-# Trade Recommendations
+# Social Media Sentiment Analysis (Placeholder)
 # ---------------------------
-def identify_support_levels(data, window=20):
-    """Identify key support levels."""
-    # Find local minima
-    window = min(window, len(data) // 4)
-    if window < 2:
-        return [data["Low"].min()]
-        
-    df = data.copy()
-    df['min'] = df['Low'].rolling(window=window, center=True).min()
-    local_mins = df[df['Low'] == df['min']]['Low'].tolist()
-    
-    # Group nearby levels
-    if not local_mins:
-        return [data["Low"].min()]
-        
-    levels = []
-    for price in sorted(local_mins):
-        # Check if this level is close to an existing one
-        if not levels or min(abs(price - level) / level for level in levels) > 0.02:
-            levels.append(price)
-    
-    # Sort by importance (frequency of touches)
-    levels_with_importance = []
-    for level in levels:
-        # Count how many times price came within 1% of this level
-        touches = sum(1 for low in data["Low"] if abs(low - level) / level < 0.01)
-        levels_with_importance.append((level, touches))
-    
-    # Sort by number of touches, then by recency (prefer more recent levels)
-    levels_with_importance.sort(key=lambda x: x[1], reverse=True)
-    return [level for level, _ in levels_with_importance[:3]]
-
-def identify_resistance_levels(data, window=20):
-    """Identify key resistance levels."""
-    # Find local maxima
-    window = min(window, len(data) // 4)
-    if window < 2:
-        return [data["High"].max()]
-        
-    df = data.copy()
-    df['max'] = df['High'].rolling(window=window, center=True).max()
-    local_maxs = df[df['High'] == df['max']]['High'].tolist()
-    
-    # Group nearby levels
-    if not local_maxs:
-        return [data["High"].max()]
-        
-    levels = []
-    for price in sorted(local_maxs):
-        # Check if this level is close to an existing one
-        if not levels or min(abs(price - level) / level for level in levels) > 0.02:
-            levels.append(price)
-    
-    # Sort by importance (frequency of touches)
-    levels_with_importance = []
-    for level in levels:
-        # Count how many times price came within 1% of this level
-        touches = sum(1 for high in data["High"] if abs(high - level) / level < 0.01)
-        levels_with_importance.append((level, touches))
-    
-    # Sort by number of touches, then by recency
-    levels_with_importance.sort(key=lambda x: x[1], reverse=True)
-    return [level for level, _ in levels_with_importance[:3]]
-
-def calculate_risk_reward(current_price, forecast, support_levels, resistance_levels):
-    """Calculate risk and reward based on support/resistance and forecast."""
-    # Determine potential reward
-    potential_high = max(forecast + [level for level in resistance_levels if level > current_price])
-    reward = potential_high - current_price
-    
-    # Determine potential risk
-    potential_low = min([level for level in support_levels if level < current_price] or [current_price * 0.95])
-    risk = current_price - potential_low
-    
-    return max(risk, 0.001 * current_price), max(reward, 0.001 * current_price)
-
-def calculate_forecast_confidence(data, forecast, timeframe):
-    """Calculate confidence score for the forecast."""
-    # Base confidence on historical volatility
-    returns = data["Close"].pct_change().dropna()
-    volatility = returns.std() * 100  # Convert to percentage
-    
-    # Determine timeframe factor
-    if timeframe in ["5min", "30min", "2h", "4h"]:
-        timeframe_factor = 0.7  # Lower confidence for intraday
-    elif timeframe == "1day":
-        timeframe_factor = 0.8
-    elif timeframe in ["7day", "1mo"]:
-        timeframe_factor = 0.85
-    else:
-        timeframe_factor = 0.9
-    
-    # Calculate trend strength
-    trend_strength = 0.8
-    if len(data) >= 20:
-        sma_20 = data["Close"].rolling(window=20).mean().iloc[-1]
-        sma_50 = data["Close"].rolling(window=min(50, len(data))).mean().iloc[-1]
-        if sma_20 > sma_50:
-            trend_direction = 1  # Uptrend
-        else:
-            trend_direction = -1  # Downtrend
-        
-        # Check if forecast follows trend
-        forecast_direction = 1 if forecast[-1] > forecast[0] else -1
-        if forecast_direction == trend_direction:
-            trend_strength = 0.9
-        else:
-            trend_strength = 0.6
-    
-    # Base confidence calculation
-    base_confidence = 90 - min(volatility * 5, 40)  # Lower confidence for higher volatility
-    
-    # Adjust by trend and timeframe factors
-    confidence = base_confidence * trend_strength * timeframe_factor
-    
-    # Ensure confidence is within 0-100 range
-    return min(max(confidence, 10), 100)
-
-def recommend_position_size(data, confidence):
-    """Recommend position size based on volatility and confidence."""
-    # Calculate historical volatility
-    returns = data["Close"].pct_change().dropna()
-    volatility = returns.std() * 100  # as percentage
-    
-    # Base position size on volatility and confidence
-    if volatility > 5:
-        # High volatility
-        base_size = "Small"
-    elif volatility > 2:
-        # Medium volatility
-        base_size = "Medium"
-    else:
-        # Low volatility
-        base_size = "Full"
-    
-    # Adjust based on confidence
-    if confidence < 30:
-        adjustment = "Very Small"
-    elif confidence < 50:
-        adjustment = "Small"
-    elif confidence < 70:
-        adjustment = "Medium"
-    else:
-        adjustment = "Full"
-    
-    # Combine base size and adjustment
-    if base_size == "Small" or adjustment == "Very Small":
-        return "Very Small (10-15% of normal position)"
-    elif base_size == "Small" or adjustment == "Small":
-        return "Small (25-33% of normal position)"
-    elif base_size == "Medium" or adjustment == "Medium":
-        return "Medium (50% of normal position)"
-    else:
-        return "Full Position"
-
-def calculate_stop_loss(current_price, direction, support_levels):
-    """Calculate stop loss level."""
-    if direction == "bullish":
-        # For bullish trades, set stop below nearest support
-        support_below = [level for level in support_levels if level < current_price]
-        if support_below:
-            return max(support_below) * 0.99  # Just below support
-        else:
-            return current_price * 0.95  # Default 5% stop
-    else:
-        # For bearish trades, use a wider stop above nearest resistance
-        return current_price * 1.05  # Default 5% stop
-
-def calculate_take_profit(current_price, direction, resistance_levels, forecast):
-    """Calculate take profit level."""
-    if direction == "bullish":
-        # For bullish trades, set target at or above resistance
-        resistance_above = [level for level in resistance_levels if level > current_price]
-        if resistance_above:
-            return min(resistance_above) * 1.01  # Just above resistance
-        else:
-            # Use the highest forecast point
-            max_forecast = max(forecast)
-            if max_forecast > current_price:
-                return max_forecast
-            return current_price * 1.05  # Default 5% target
-    else:
-        # For bearish trades, set target below support
-        return current_price * 0.95  # Default 5% target
-
-def generate_recommendation_notes(direction, confidence, risk, reward, timeframe):
-    """Generate recommendation notes."""
-    if confidence > 70:
-        confidence_text = "high confidence"
-    elif confidence > 50:
-        confidence_text = "moderate confidence"
-    else:
-        confidence_text = "speculative"
-    
-    risk_reward_ratio = reward / risk if risk > 0 else 0
-    
-    if risk_reward_ratio > 3:
-        risk_reward_text = "very favorable"
-    elif risk_reward_ratio > 2:
-        risk_reward_text = "favorable"
-    elif risk_reward_ratio > 1:
-        risk_reward_text = "acceptable"
-    else:
-        risk_reward_text = "unfavorable"
-    
-    timeframe_text = "short-term" if timeframe in ["5min", "30min", "2h", "4h", "1day"] else "medium-term"
-    
-    return f"{confidence_text} {timeframe_text} {direction} trade with {risk_reward_text} risk/reward ratio"
-
-def generate_trade_recommendations(data, forecast, symbol, timeframe):
+def get_social_media_sentiment(symbol):
     """
-    Generate concrete trade recommendations based on forecasts and market analysis.
+    Get social media sentiment for a symbol.
+    This is a placeholder function that returns simulated data.
     """
-    try:
-        # Current price and forecast direction
-        current_price = data['Close'].iloc[-1]
-        forecast_direction = "bullish" if forecast[-1] > current_price else "bearish"
+    # In a real implementation, you'd query Twitter, Reddit, StockTwits APIs
+    sentiment_score = random.uniform(-0.6, 0.6)
+    
+    # Add some bias based on the symbol (for demo purposes)
+    popular_symbols = {
+        "AAPL": 0.2, "MSFT": 0.15, "TSLA": 0.3, "AMZN": 0.1, "NFLX": -0.1,
+        "FB": -0.15, "GOOGL": 0.1, "NVDA": 0.25
+    }
+    
+    if symbol.upper() in popular_symbols:
+        sentiment_score += popular_symbols[symbol.upper()]
+    
+    # Ensure score is within -1 to 1 range
+    sentiment_score = max(-1.0, min(1.0, sentiment_score))
+    
+    # Determine category
+    if sentiment_score > 0.2:
+        category = "positive"
+    elif sentiment_score < -0.2:
+        category = "negative"
+    else:
+        category = "neutral"
+    
+    return {
+        "score": sentiment_score,
+        "category": category,
+        "sources": ["Twitter", "Reddit", "StockTwits"],
+        "volume": random.randint(100, 5000),  # Simulated mention volume
+        "trending": abs(sentiment_score) > 0.4  # Is it trending?
+    }
+
+# ---------------------------
+# Sentiment Trend Analysis
+# ---------------------------
+def analyze_sentiment_trends(symbol, price_data, days=30):
+    """
+    Analyze sentiment trends and correlate with price action.
+    This is a placeholder that returns simulated data.
+    
+    Args:
+        symbol: Stock symbol
+        price_data: DataFrame with price history
+        days: Number of days to analyze
+    """
+    # Generate some simulated sentiment data with trends
+    np.random.seed(42)  # For reproducibility
+    
+    # Create a date range
+    end_date = datetime.now()
+    start_date = end_date - timedelta(days=days)
+    date_range = pd.date_range(start=start_date, end=end_date, freq='D')
+    
+    # Create a base trend
+    t = np.linspace(0, 1, len(date_range))
+    base_trend = 0.2 * np.sin(2 * np.pi * t * 2)  # Sinusoidal trend
+    
+    # Add some noise
+    noise = np.random.normal(0, 0.15, len(date_range))
+    
+    # Combine trend and noise
+    news_sentiment = np.clip(base_trend + noise, -1, 1)
+    
+    # Social sentiment follows news with a slight delay and more volatility
+    social_noise = np.random.normal(0, 0.25, len(date_range))
+    social_sentiment = np.clip(np.roll(base_trend, 2) + social_noise, -1, 1)
+    
+    # Calculate current values
+    current_news = news_sentiment[-1]
+    current_social = social_sentiment[-1]
+    
+    # Simulate trend
+    recent_news_trend = news_sentiment[-5:].mean() - news_sentiment[-10:-5].mean()
+    if recent_news_trend > 0.1:
+        trend = "strongly_improving"
+    elif recent_news_trend > 0.05:
+        trend = "improving"
+    elif recent_news_trend < -0.1:
+        trend = "strongly_deteriorating"
+    elif recent_news_trend < -0.05:
+        trend = "deteriorating"
+    else:
+        trend = "stable"
+    
+    # Create a sample analysis
+    if current_news > 0.3 and current_social > 0.3:
+        analysis = "Both news and social sentiment are strongly positive, suggesting bullish market perception."
+    elif current_news < -0.3 and current_social < -0.3:
+        analysis = "Both news and social sentiment are strongly negative, suggesting bearish market perception."
+    elif current_news * current_social < 0:  # Different signs
+        analysis = "There's a divergence between news and social sentiment, which might indicate a shifting market perception."
+    else:
+        analysis = "Sentiment is relatively neutral with no strong directional bias."
+    
+    if trend == "strongly_improving" or trend == "improving":
+        analysis += " Sentiment has been improving recently, which could support further price increases."
+    elif trend == "strongly_deteriorating" or trend == "deteriorating":
+        analysis += " Sentiment has been deteriorating recently, which could lead to price weakness."
+    
+    return {
+        "news_sentiment_current": float(current_news),
+        "social_sentiment_current": float(current_social),
+        "sentiment_trend": trend,
+        "analysis": analysis
+    }
+
+# ---------------------------
+# Automated Trading Signals
+# ---------------------------
+class SignalType(Enum):
+    BUY = "buy"
+    SELL = "sell"
+    HOLD = "hold"
+
+class SignalStrength(Enum):
+    STRONG = "strong"
+    MODERATE = "moderate"
+    WEAK = "weak"
+
+class SignalGenerator:
+    """Generate trading signals based on technical indicators and price action."""
+    
+    def __init__(self, risk_appetite="moderate"):
+        """Initialize with risk appetite: conservative, moderate, or aggressive."""
+        self.risk_appetite = risk_appetite
         
-        # Calculate key levels
-        support_levels = identify_support_levels(data)
-        resistance_levels = identify_resistance_levels(data)
+    def generate_signals(self, data, include_indicators=True):
+        """Generate trading signals from the provided data."""
+        # Ensure we have indicators
+        if include_indicators:
+            data = calculate_technical_indicators(data)
+            
+        # Generate signals from various methods
+        trend_signal = self._generate_trend_signal(data)
+        momentum_signal = self._generate_momentum_signal(data)
+        reversal_signal = self._generate_reversal_signal(data)
+        breakout_signal = self._generate_breakout_signal(data)
+        volume_signal = self._generate_volume_signal(data)
         
-        # Determine risk/reward ratio
-        risk, reward = calculate_risk_reward(current_price, forecast, support_levels, resistance_levels)
-        
-        # Calculate confidence score (0-100)
-        confidence = calculate_forecast_confidence(data, forecast, timeframe)
-        
-        # Generate position size recommendation based on volatility and confidence
-        position_size = recommend_position_size(data, confidence)
-        
-        # Generate stop loss and take profit levels
-        stop_loss = calculate_stop_loss(current_price, forecast_direction, support_levels)
-        take_profit = calculate_take_profit(current_price, forecast_direction, resistance_levels, forecast)
-        
-        recommendations = {
-            "direction": forecast_direction,
-            "confidence": confidence,
-            "entry_price": current_price,
-            "stop_loss": stop_loss,
-            "take_profit": take_profit,
-            "risk_reward_ratio": reward / risk if risk > 0 else 0,
-            "recommended_position_size": position_size,
-            "key_support_levels": support_levels[:2],  # Top 2 support levels
-            "key_resistance_levels": resistance_levels[:2],  # Top 2 resistance levels
-            "timeframe": timeframe,
-            "notes": generate_recommendation_notes(forecast_direction, confidence, risk, reward, timeframe)
+        # Weight based on risk appetite
+        if self.risk_appetite == "conservative":
+            weights = {"trend": 0.4, "momentum": 0.2, "reversal": 0.1, "breakout": 0.1, "volume": 0.2}
+        elif self.risk_appetite == "aggressive":
+            weights = {"trend": 0.2, "momentum": 0.3, "reversal": 0.2, "breakout": 0.2, "volume": 0.1}
+        else:  # moderate
+            weights = {"trend": 0.3, "momentum": 0.25, "reversal": 0.15, "breakout": 0.15, "volume": 0.15}
+            
+        # Store individual signals
+        signals = {
+            "components": {
+                "trend": trend_signal,
+                "momentum": momentum_signal,
+                "reversal": reversal_signal,
+                "breakout": breakout_signal,
+                "volume": volume_signal
+            }
         }
         
-        return recommendations
-    except Exception as e:
-        print(f"Error generating trade recommendations: {e}")
-        return {"status": "unavailable", "error": str(e)}
+        # Calculate signal score (-100 to +100)
+        signal_score = 0
+        for name, signal in signals["components"].items():
+            signal_value = 0
+            if signal["type"] == SignalType.BUY.value:
+                signal_value = 100 if signal["strength"] == SignalStrength.STRONG.value else 60 if signal["strength"] == SignalStrength.MODERATE.value else 30
+            elif signal["type"] == SignalType.SELL.value:
+                signal_value = -100 if signal["strength"] == SignalStrength.STRONG.value else -60 if signal["strength"] == SignalStrength.MODERATE.value else -30
+            signal_score += signal_value * weights[name]
+            
+        # Determine overall signal
+        if signal_score > 50:
+            overall_type = SignalType.BUY.value
+            overall_strength = SignalStrength.STRONG.value if signal_score > 75 else SignalStrength.MODERATE.value
+        elif signal_score < -50:
+            overall_type = SignalType.SELL.value
+            overall_strength = SignalStrength.STRONG.value if signal_score < -75 else SignalStrength.MODERATE.value
+        else:
+            overall_type = SignalType.HOLD.value
+            overall_strength = SignalStrength.MODERATE.value if abs(signal_score) > 25 else SignalStrength.WEAK.value
+                
+        signals["overall"] = {
+            "type": overall_type,
+            "strength": overall_strength,
+            "score": signal_score,
+            "risk_appetite": self.risk_appetite
+        }
+        
+        # Generate risk management recommendations
+        if overall_type == SignalType.BUY.value:
+            signals["risk_management"] = self._calculate_buy_risk_management(data)
+        elif overall_type == SignalType.SELL.value:
+            signals["risk_management"] = self._calculate_sell_risk_management(data)
+        
+        return signals
     
+    # Helper method implementation stubs (these would be fully implemented)
+    def _generate_trend_signal(self, data): pass
+    def _generate_momentum_signal(self, data): pass
+    def _generate_reversal_signal(self, data): pass
+    def _generate_breakout_signal(self, data): pass
+    def _generate_volume_signal(self, data): pass
+    
+    def _calculate_buy_risk_management(self, data):
+        """Calculate risk management for buy signals."""
+        current_price = data['Close'].iloc[-1]
+        atr = data.get('ATR', pd.Series()).iloc[-1] or current_price * 0.02
+        
+        # Simple implementation - in full code would use support/resistance
+        stop_loss = max(current_price - atr * 3, data['Low'].tail(10).min() * 0.98)
+        take_profit_1 = current_price + atr * 2
+        take_profit_2 = current_price + atr * 4
+        
+        return {
+            "entry": float(current_price),
+            "stop_loss": float(stop_loss),
+            "take_profit_1": float(take_profit_1),
+            "take_profit_2": float(take_profit_2),
+            "risk_reward": float((take_profit_1 - current_price) / (current_price - stop_loss)) if current_price > stop_loss else 0,
+            "position_size": f"{2}% account risk"  # Simplified
+        }
+    
+    def _calculate_sell_risk_management(self, data):
+        """Calculate risk management for sell signals."""
+        # Similar to buy but reversed (implementation omitted for brevity)
+        return {}
+
+# Function to generate trading signals
+def generate_trading_signals(data, risk_appetite="moderate"):
+    """Generate trading signals for the given data."""
+    generator = SignalGenerator(risk_appetite)
+    return generator.generate_signals(data)
+
 # ---------------------------
 # Generate OHLC data for forecast points
 # ---------------------------
@@ -1291,31 +1238,24 @@ def generate_forecast_ohlc(data, forecast):
     # Get average daily volatility metrics from historical data
     avg_range = (data["High"] - data["Low"]).mean()
     avg_body_size = abs(data["Open"] - data["Close"]).mean()
-    
     # Calculate the direction of each forecast day (up or down)
     forecast_ohlc = []
     last_close = data["Close"].iloc[-1]
-    
     for i, close in enumerate(forecast):
         if i == 0:
             prev_close = last_close
         else:
             prev_close = forecast[i-1]
-            
         direction = 1 if close > prev_close else -1
-        
         # Calculate volatility factor - more movement for later forecast days
         volatility_factor = 1.0 + (i * 0.1)  # Increases volatility for later days
-        
         # Calculate open based on previous close with some random variation
         # More realistic than always starting at previous close
         random_open_factor = np.random.normal(0, 0.3)
         open_deviation = avg_body_size * random_open_factor * volatility_factor
         open_price = prev_close + open_deviation
-        
         # Determine high and low based on average range, direction, and volatility
         day_range = avg_range * volatility_factor * (0.8 + np.random.random() * 0.4)
-        
         if direction > 0:
             # Upward day
             body_height = abs(close - open_price)
@@ -1330,20 +1270,16 @@ def generate_forecast_ohlc(data, forecast):
             upper_wick = day_range - body_height - lower_wick
             high = max(close, open_price) + upper_wick
             low = min(close, open_price) - lower_wick
-        
         # Make sure high is at least slightly higher than both open and close
         high = max(high, open_price * 1.001, close * 1.001)
-        
         # Make sure low is at least slightly lower than both open and close
         low = min(low, open_price * 0.999, close * 0.999)
-        
         forecast_ohlc.append({
             "open": float(open_price),
             "high": float(high),
             "low": float(low),
             "close": float(close)
         })
-    
     return forecast_ohlc
 
 # ---------------------------
@@ -1356,7 +1292,6 @@ def get_chart_data(data, forecast, timeframe):
     """
     historical_dates = data.index.strftime("%Y-%m-%dT%H:%M:%SZ").tolist()
     historical_values = data["Close"].tolist()
-    
     # Add OHLC data if available
     historical_ohlc = None
     if {"Open", "High", "Low", "Close"}.issubset(data.columns):
@@ -1369,7 +1304,6 @@ def get_chart_data(data, forecast, timeframe):
             }
             for _, row in data.iterrows()
         ]
-    
     last_date = data.index[-1]
     if timeframe.endswith("min"):
         minutes = int(timeframe.replace("min", ""))
@@ -1391,10 +1325,8 @@ def get_chart_data(data, forecast, timeframe):
             periods=len(forecast),
             freq="B"
         ).strftime("%Y-%m-%dT%H:%M:%SZ").tolist()
-    
     # Generate forecast OHLC data
     forecast_ohlc = generate_forecast_ohlc(data, forecast)
-    
     result = {
         "historicalDates": historical_dates,
         "historicalValues": historical_values,
@@ -1402,58 +1334,25 @@ def get_chart_data(data, forecast, timeframe):
         "forecastValues": forecast,
         "timeframe": timeframe
     }
-    
     # Include OHLC data if available
     if historical_ohlc:
         result["ohlc"] = historical_ohlc
         result["forecastOhlc"] = forecast_ohlc
-    
     return result
 
-def extract_key_indicators(data_with_indicators):
-    """Extract key technical indicators for the response."""
-    indicators = {}
-    
-    try:
-        # Get the most recent values of key indicators
-        for indicator in ['RSI', 'MACD', 'ATR', 'SMA_20', 'SMA_50', 'BB_Upper', 'BB_Lower']:
-            if indicator in data_with_indicators.columns:
-                indicators[indicator] = float(data_with_indicators[indicator].iloc[-1])
-        
-        # Calculate additional standard indicators
-        if 'Close' in data_with_indicators.columns:
-            last_close = data_with_indicators['Close'].iloc[-1]
-            
-            # Trend indicators
-            if 'SMA_20' in indicators and 'SMA_50' in indicators:
-                indicators['trend'] = 'bullish' if indicators['SMA_20'] > indicators['SMA_50'] else 'bearish'
-            
-            # Bollinger Band position
-            if 'BB_Upper' in indicators and 'BB_Lower' in indicators:
-                bb_position = (last_close - indicators['BB_Lower']) / (indicators['BB_Upper'] - indicators['BB_Lower'])
-                indicators['BB_position'] = float(bb_position)
-        
-        return indicators
-    except Exception as e:
-        print(f"Error extracting indicators: {e}")
-        return {}
-    
 # ---------------------------
 # Chart Generation with Candlestick + Continuous Forecast
 # ---------------------------
 def generate_chart(data, symbol, forecast=None, timeframe="1mo"):
     """
     Generate a chart image.
-    - If OHLC columns are present (daily data), create a dark-themed candlestick chart using mplfinance.
-    The forecast line is overlaid so its first point connects to the last historical close.
-    A flat connector (yellow) bridges any gap.
+    - If OHLC columns are present (daily data), create a dark-themed candlestick chart.
     - For intraday data (or if OHLC is missing), fall back to a simple dark line chart.
     """
     try:
         os.makedirs("static", exist_ok=True)
         filename = f"chart_{symbol.upper()}.png"
         filepath = os.path.join("static", filename)
-
         # Check for OHLC => use candlestick
         if {"Open", "High", "Low", "Close"}.issubset(data.columns):
             try:
@@ -1490,12 +1389,12 @@ def generate_chart(data, symbol, forecast=None, timeframe="1mo"):
                         [last_close] + forecast,
                         linestyle="--", marker="o", color="cyan", linewidth=2, label="Forecast"
                     )
-                    ax.legend()
+                ax.legend()
                 fig.savefig(filepath, facecolor=fig.get_facecolor(), edgecolor='none')
                 plt.close(fig)
             except Exception as e:
                 print(f"Error using mplfinance for candlestick chart: {e}")
-                # Fallback to dark line chart
+                # Fall back to line chart
                 plt.style.use("dark_background")
                 plt.figure(figsize=(10, 5))
                 plt.plot(data.index, data["Close"], label="Historical", color="white")
@@ -1532,105 +1431,6 @@ def generate_chart(data, symbol, forecast=None, timeframe="1mo"):
         return "chart_error.png"
     
 # ---------------------------
-# OpenAI Analysis Functions
-# ---------------------------
-def refine_predictions_with_openai(symbol, regime, forecast, history, timeframe):
-    """
-    Call the OpenAI API to provide a detailed analysis of the stock that's timeframe-specific.
-    Now includes market regime information and timeout handling.
-    """
-    try:
-        # Add a timeout to prevent blocking
-        timeout_seconds = 5  # Set a shorter timeout
-        
-        history_tail = history["Close"].tail(min(30, len(history))).tolist()
-        
-        # Create a timeframe-specific prompt
-        if timeframe in ["5min", "30min", "2h", "4h"]:
-            time_context = f"You are analyzing intraday {timeframe} data. Focus on short-term trading strategies and intraday patterns."
-            analysis_timeframe = "intraday"
-        elif timeframe == "1day":
-            time_context = "You are analyzing daily data with a focus on very short-term price action (1-5 days)."
-            analysis_timeframe = "very short-term (1-5 days)"
-        elif timeframe == "7day":
-            time_context = "You are analyzing a week of daily data with a focus on short-term price action (1-2 weeks)."
-            analysis_timeframe = "short-term (1-2 weeks)"
-        elif timeframe == "1mo":
-            time_context = "You are analyzing a month of daily data with a focus on intermediate-term price action (2-4 weeks)."
-            analysis_timeframe = "intermediate-term (2-4 weeks)"
-        elif timeframe == "3mo":
-            time_context = "You are analyzing three months of daily data with a focus on medium-term price action (1-3 months)."
-            analysis_timeframe = "medium-term (1-3 months)"
-        else:  # 1yr
-            time_context = "You are analyzing a year of daily data with a focus on longer-term price action (3-12 months)."
-            analysis_timeframe = "longer-term (3-12 months)"
-        
-        # Add market regime information
-        regime_context = ""
-        if regime == "trending_up":
-            regime_context = "The stock is in an uptrend. Consider bullish strategies like buying on dips or breakouts."
-        elif regime == "trending_down":
-            regime_context = "The stock is in a downtrend. Consider bearish strategies or waiting for reversal signals."
-        elif regime == "mean_reverting":
-            regime_context = "The stock is showing mean-reverting behavior. Consider counter-trend strategies."
-        elif regime == "volatile":
-            regime_context = "The stock is showing high volatility. Consider volatility-based strategies and tighter risk management."
-        
-        prompt = f"""
-        {time_context}
-        
-        Analyze the following stock data for {symbol.upper()} with a {timeframe} timeframe:
-        
-        Market Regime: {regime}
-        {regime_context}
-        
-        Historical Closing Prices (last {len(history_tail)} periods): {history_tail}
-        Forecast (next 5 periods): {forecast}
-        
-        Provide a short but detailed {analysis_timeframe} analysis that includes:
-        - Key observations on historical performance
-        - Technical indicators relevant to this timeframe
-        - An evaluation of the forecast
-        - Specific trading recommendations
-        - Risk management strategies
-        
-        Keep your response concise but informative.
-        """
-        
-        try:
-            response = openai.ChatCompletion.create(
-                model="gpt-3.5-turbo",  # Use a faster model
-                messages=[
-                    {"role": "system", "content": f"You are a stock market expert specializing in {analysis_timeframe} analysis."},
-                    {"role": "user", "content": prompt}
-                ],
-                timeout=timeout_seconds,
-                max_tokens=500  # Limit response size
-            )
-            return response["choices"][0]["message"]["content"]
-        except Exception as e:
-            print(f"OpenAI API error (timeout): {e}")
-            # Return a simpler analysis based on forecast direction instead
-            direction = "bullish" if forecast[-1] > history["Close"].iloc[-1] else "bearish"
-            return f"""
-            # Quick Analysis for {symbol.upper()} ({timeframe})
-            
-            The forecast indicates a {direction} trend for {symbol.upper()} in the {timeframe} timeframe.
-            
-            ## Key Points
-            - Current price: ${history["Close"].iloc[-1]:.2f}
-            - Forecast end price: ${forecast[-1]:.2f}
-            - Market regime: {regime}
-            
-            ## Trading Strategy
-            Consider a {direction} position with appropriate risk management.
-            """
-    except Exception as e:
-        print(f"Error in prediction refinement: {e}")
-        # Return a very basic analysis as fallback
-        return f"Analysis for {symbol}: The forecast suggests continued price movement. Monitor key levels and market conditions."
-    
-# ---------------------------
 # Flask Routes
 # ---------------------------
 @app.route("/")
@@ -1642,16 +1442,13 @@ def process():
     symbol = request.args.get("symbol", "AAPL")
     timeframe = request.args.get("timeframe", "1mo")
     news_count = int(request.args.get("news_count", "5"))
-    
+    risk_appetite = request.args.get("risk_appetite", "moderate")
     print(f"Received request for symbol: {symbol} with timeframe: {timeframe}")
-
     try:
         # Use a timer to track execution time
         start_time = datetime.now()
-        
         # Fetch data first - this is the most critical part
         data = fetch_data(symbol, timeframe)
-        
         # Generate enhanced forecast - this is also essential
         try:
             forecast = enhanced_forecast(data, periods=5, timeframe=timeframe)
@@ -1666,17 +1463,14 @@ def process():
                     forecast = arima_prediction(arima_model)
                 except:
                     forecast = linear_regression_forecast(data, periods=5, degree=1)
-        
         # Prepare chart data - needed for the UI
         chart_data = get_chart_data(data, forecast, timeframe)
-        
         # Start with a basic response that will work even if other parts timeout
         response = {
             "forecast": forecast,
             "chartData": {"symbol": symbol.upper(), **chart_data},
             "news": [{"title": "Loading news...", "source": {"name": "Trading System"}, "summary": "News will be available on next refresh."}]
         }
-        
         # Generate chart in the background
         try:
             chart_filename = generate_chart(data, symbol, forecast=forecast, timeframe=timeframe)
@@ -1684,13 +1478,11 @@ def process():
         except Exception as e:
             print(f"Error generating chart: {e}")
             response["chart_path"] = "chart_error.png"
-        
         # Check time elapsed and prioritize remaining operations
         elapsed = (datetime.now() - start_time).total_seconds()
         if elapsed > 15:  # If we're already taking too long, return what we have
             print(f"Request taking too long ({elapsed:.2f}s), returning partial data")
             return jsonify(response)
-        
         # Now process additional data in order of importance
         # 1. Technical indicators
         try:
@@ -1700,7 +1492,6 @@ def process():
                 response["key_indicators"] = key_indicators
         except Exception as e:
             print(f"Error calculating indicators: {e}")
-        
         # 2. News data
         elapsed = (datetime.now() - start_time).total_seconds()
         if elapsed < 18:  # Still have time
@@ -1710,7 +1501,6 @@ def process():
                     response["news"] = news
             except Exception as e:
                 print(f"Error fetching news: {e}")
-        
         # 3. Market regime detection
         elapsed = (datetime.now() - start_time).total_seconds()
         if elapsed < 20:  # Still have time
@@ -1723,35 +1513,55 @@ def process():
                 regime = "unknown"
         else:
             regime = "unknown"
-        
-        # 4. If we have time left, do sentiment analysis
+        # 4. Trading signals
         elapsed = (datetime.now() - start_time).total_seconds()
         if elapsed < 22:  # Still have time
             try:
-                sentiment = analyze_news_sentiment(symbol)
-                if sentiment != 0:
-                    response["sentiment_score"] = sentiment
+                signals = generate_trading_signals(data_with_indicators, risk_appetite)
+                response["trading_signals"] = signals
             except Exception as e:
-                print(f"Error analyzing sentiment: {e}")
-        
-        # 5. If we still have time, do the OpenAI analysis
+                print(f"Error generating trading signals: {e}")
+        # 5. Enhanced sentiment analysis
         elapsed = (datetime.now() - start_time).total_seconds()
         if elapsed < 25:  # Still have time
             try:
-                refined_prediction = refine_predictions_with_openai(symbol, regime, forecast, data, timeframe)
-                response["openai_refined_prediction"] = refined_prediction
+                sentiment = analyze_news_sentiment(symbol)
+                if sentiment:
+                    response["sentiment_analysis"] = sentiment
             except Exception as e:
-                print(f"Error in OpenAI analysis: {e}")
-                # Create a basic analysis
-                direction = "bullish" if forecast[-1] > data['Close'].iloc[-1] else "bearish"
-                response["openai_refined_prediction"] = f"Analysis: The forecast for {symbol} shows a {direction} trend in the {timeframe} timeframe."
-        
+                print(f"Error analyzing sentiment: {e}")
         # Return the response with whatever we managed to calculate
         print(f"Total processing time: {(datetime.now() - start_time).total_seconds():.2f}s")
         return jsonify(response)
     except Exception as e:
         print(f"Error processing request: {e}")
         return jsonify({"error": str(e)}), 500
+
+# Helper to extract key indicators for response
+def extract_key_indicators(data_with_indicators):
+    """Extract key technical indicators for the response."""
+    indicators = {}
+    try:
+        # Get the most recent values of key indicators
+        for indicator in ['RSI', 'MACD', 'ATR', 'SMA_20', 'SMA_50', 'BB_Upper', 'BB_Lower']:
+            if indicator in data_with_indicators.columns:
+                indicators[indicator] = float(data_with_indicators[indicator].iloc[-1])
+        # Add derived indicators
+        if 'Close' in data_with_indicators.columns:
+            last_close = data_with_indicators['Close'].iloc[-1]
+            # Trend determination
+            if 'SMA_20' in indicators and 'SMA_50' in indicators:
+                indicators['trend'] = 'bullish' if indicators['SMA_20'] > indicators['SMA_50'] else 'bearish'
+            # Bollinger Band position
+            if 'BB_Upper' in indicators and 'BB_Lower' in indicators:
+                bb_width = indicators['BB_Upper'] - indicators['BB_Lower']
+                if bb_width > 0:
+                    bb_position = (last_close - indicators['BB_Lower']) / bb_width
+                    indicators['BB_position'] = float(bb_position)
+        return indicators
+    except Exception as e:
+        print(f"Error extracting indicators: {e}")
+        return {}
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8080))
