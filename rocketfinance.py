@@ -286,27 +286,28 @@ def detect_market_regime(data, window=20):
     if len(df) > 2:
         autocorr = df['returns'].dropna().autocorr(lag=1)
         trend = (df['Close'].iloc[-1] - df['Close'].iloc[0]) / df['Close'].iloc[0]
-    # Calculate volatility
-    if len(df['returns'].dropna()) > 0:
-        volatility = df['returns'].std() * np.sqrt(252)  # Annualized volatility
-    else:
-        volatility = 0
-    # Calculate ADX (Average Directional Index) to measure trend strength
-    df = calculate_adx(df)
-    adx_value = df['ADX'].iloc[-1] if 'ADX' in df.columns and not pd.isna(df['ADX'].iloc[-1]) else 15
-    # Determine regime
-    if adx_value > 25:  # Strong trend
-        if trend > 0:
-            return 'trending_up'
+        # Calculate volatility
+        if len(df['returns'].dropna()) > 0:
+            volatility = df['returns'].std() * np.sqrt(252)  # Annualized volatility
         else:
-            return 'trending_down'
-    elif autocorr < -0.2:  # Negative autocorrelation suggests mean reversion
-        return 'mean_reverting'
-    elif volatility > 0.3:  # High volatility
-        return 'volatile'
+            volatility = 0
+        # Calculate ADX (Average Directional Index) to measure trend strength
+        df = calculate_adx(df)
+        adx_value = df['ADX'].iloc[-1] if 'ADX' in df.columns and not pd.isna(df['ADX'].iloc[-1]) else 15
+        # Determine regime
+        if adx_value > 25:  # Strong trend
+            if trend > 0:
+                return 'trending_up'
+            else:
+                return 'trending_down'
+        elif autocorr < -0.2:  # Negative autocorrelation suggests mean reversion
+            return 'mean_reverting'
+        elif volatility > 0.3:  # High volatility
+            return 'volatile'
+        else:
+            return 'unknown'
     else:
         return 'unknown'
-    
 
 def calculate_adx(df, period=14):
     """Calculate Average Directional Index."""
@@ -661,6 +662,7 @@ def ml_ensemble_forecast(data, periods=5, timeframe="1day"):
         for name, model in models.items():
             if model is not None:  # Only use models that were successfully trained
                 predictions[name] = generate_model_predictions(model, features, df, periods)
+        
         # Generate ARIMA and enhanced forecasts as well
         if timeframe.endswith('min') or timeframe.endswith('h'):
             predictions["poly_reg"] = linear_regression_forecast(data, periods, degree=2)
@@ -670,7 +672,9 @@ def ml_ensemble_forecast(data, periods=5, timeframe="1day"):
                 predictions["arima"] = arima_prediction(arima_model)
             except:
                 predictions["poly_reg"] = linear_regression_forecast(data, periods, degree=1)
+        
         predictions["enhanced"] = enhanced_forecast(data, periods, timeframe)
+        
         # Ensemble the predictions (weighted average)
         weights = {
             "linear": 0.1,
@@ -680,6 +684,7 @@ def ml_ensemble_forecast(data, periods=5, timeframe="1day"):
             "poly_reg" if timeframe.endswith('min') or timeframe.endswith('h') else "arima": 0.2,
             "enhanced": 0.3
         }
+        
         # Calculate weighted ensemble
         ensemble_forecast = []
         for i in range(periods):
@@ -689,18 +694,22 @@ def ml_ensemble_forecast(data, periods=5, timeframe="1day"):
                 if model_name in weights and i < len(prediction):
                     weighted_sum += prediction[i] * weights.get(model_name, 0)
                     weight_total += weights.get(model_name, 0)
+            
             # Add some realistic variation
             ensemble_val = weighted_sum / weight_total if weight_total > 0 else data["Close"].iloc[-1]
             ensemble_forecast.append(float(ensemble_val))
+            
         # Add some realistic variation like in enhanced_forecast
         last_price = data["Close"].iloc[-1]
         returns = np.diff(data["Close"].values) / data["Close"].values[:-1]
         recent_volatility = np.std(returns[-min(30, len(returns)):])
+        
         # Add controlled randomness to forecast points
         for i in range(1, len(ensemble_forecast)):
             # Add market noise based on historical volatility
             random_component = ensemble_forecast[i-1] * recent_volatility * np.random.normal(0, 0.7)
             ensemble_forecast[i] = ensemble_forecast[i] + random_component
+            
         print(f"Ensemble ML forecast: {ensemble_forecast}")
         return ensemble_forecast
     except Exception as e:
@@ -989,120 +998,7 @@ def analyze_news_sentiment(symbol):
     except Exception as e:
         print(f"Error analyzing news sentiment: {e}")
         return {"score": 0, "category": "neutral", "confidence": 0}
-
-# ---------------------------
-# Social Media Sentiment Analysis (Placeholder)
-# ---------------------------
-def get_social_media_sentiment(symbol):
-    """
-    Get social media sentiment for a symbol.
-    This is a placeholder function that returns simulated data.
-    """
-    # In a real implementation, you'd query Twitter, Reddit, StockTwits APIs
-    sentiment_score = random.uniform(-0.6, 0.6)
     
-    # Add some bias based on the symbol (for demo purposes)
-    popular_symbols = {
-        "AAPL": 0.2, "MSFT": 0.15, "TSLA": 0.3, "AMZN": 0.1, "NFLX": -0.1,
-        "FB": -0.15, "GOOGL": 0.1, "NVDA": 0.25
-    }
-    
-    if symbol.upper() in popular_symbols:
-        sentiment_score += popular_symbols[symbol.upper()]
-    
-    # Ensure score is within -1 to 1 range
-    sentiment_score = max(-1.0, min(1.0, sentiment_score))
-    
-    # Determine category
-    if sentiment_score > 0.2:
-        category = "positive"
-    elif sentiment_score < -0.2:
-        category = "negative"
-    else:
-        category = "neutral"
-    
-    return {
-        "score": sentiment_score,
-        "category": category,
-        "sources": ["Twitter", "Reddit", "StockTwits"],
-        "volume": random.randint(100, 5000),  # Simulated mention volume
-        "trending": abs(sentiment_score) > 0.4  # Is it trending?
-    }
-
-# ---------------------------
-# Sentiment Trend Analysis
-# ---------------------------
-def analyze_sentiment_trends(symbol, price_data, days=30):
-    """
-    Analyze sentiment trends and correlate with price action.
-    This is a placeholder that returns simulated data.
-    
-    Args:
-        symbol: Stock symbol
-        price_data: DataFrame with price history
-        days: Number of days to analyze
-    """
-    # Generate some simulated sentiment data with trends
-    np.random.seed(42)  # For reproducibility
-    
-    # Create a date range
-    end_date = datetime.now()
-    start_date = end_date - timedelta(days=days)
-    date_range = pd.date_range(start=start_date, end=end_date, freq='D')
-    
-    # Create a base trend
-    t = np.linspace(0, 1, len(date_range))
-    base_trend = 0.2 * np.sin(2 * np.pi * t * 2)  # Sinusoidal trend
-    
-    # Add some noise
-    noise = np.random.normal(0, 0.15, len(date_range))
-    
-    # Combine trend and noise
-    news_sentiment = np.clip(base_trend + noise, -1, 1)
-    
-    # Social sentiment follows news with a slight delay and more volatility
-    social_noise = np.random.normal(0, 0.25, len(date_range))
-    social_sentiment = np.clip(np.roll(base_trend, 2) + social_noise, -1, 1)
-    
-    # Calculate current values
-    current_news = news_sentiment[-1]
-    current_social = social_sentiment[-1]
-    
-    # Simulate trend
-    recent_news_trend = news_sentiment[-5:].mean() - news_sentiment[-10:-5].mean()
-    if recent_news_trend > 0.1:
-        trend = "strongly_improving"
-    elif recent_news_trend > 0.05:
-        trend = "improving"
-    elif recent_news_trend < -0.1:
-        trend = "strongly_deteriorating"
-    elif recent_news_trend < -0.05:
-        trend = "deteriorating"
-    else:
-        trend = "stable"
-    
-    # Create a sample analysis
-    if current_news > 0.3 and current_social > 0.3:
-        analysis = "Both news and social sentiment are strongly positive, suggesting bullish market perception."
-    elif current_news < -0.3 and current_social < -0.3:
-        analysis = "Both news and social sentiment are strongly negative, suggesting bearish market perception."
-    elif current_news * current_social < 0:  # Different signs
-        analysis = "There's a divergence between news and social sentiment, which might indicate a shifting market perception."
-    else:
-        analysis = "Sentiment is relatively neutral with no strong directional bias."
-    
-    if trend == "strongly_improving" or trend == "improving":
-        analysis += " Sentiment has been improving recently, which could support further price increases."
-    elif trend == "strongly_deteriorating" or trend == "deteriorating":
-        analysis += " Sentiment has been deteriorating recently, which could lead to price weakness."
-    
-    return {
-        "news_sentiment_current": float(current_news),
-        "social_sentiment_current": float(current_social),
-        "sentiment_trend": trend,
-        "analysis": analysis
-    }
-
 # ---------------------------
 # Automated Trading Signals
 # ---------------------------
@@ -1125,104 +1021,236 @@ class SignalGenerator:
         
     def generate_signals(self, data, include_indicators=True):
         """Generate trading signals from the provided data."""
+        # Safety check for data
+        if not isinstance(data, pd.DataFrame) or len(data) < 5:
+            return {"overall": {"type": "hold", "strength": "weak"}, "components": {}}
+            
         # Ensure we have indicators
         if include_indicators:
-            data = calculate_technical_indicators(data)
-            
-        # Generate signals from various methods
-        trend_signal = self._generate_trend_signal(data)
-        momentum_signal = self._generate_momentum_signal(data)
-        reversal_signal = self._generate_reversal_signal(data)
-        breakout_signal = self._generate_breakout_signal(data)
-        volume_signal = self._generate_volume_signal(data)
+            try:
+                data = calculate_technical_indicators(data)
+            except Exception as e:
+                print(f"Error calculating indicators: {e}")
         
-        # Weight based on risk appetite
-        if self.risk_appetite == "conservative":
-            weights = {"trend": 0.4, "momentum": 0.2, "reversal": 0.1, "breakout": 0.1, "volume": 0.2}
-        elif self.risk_appetite == "aggressive":
-            weights = {"trend": 0.2, "momentum": 0.3, "reversal": 0.2, "breakout": 0.2, "volume": 0.1}
-        else:  # moderate
-            weights = {"trend": 0.3, "momentum": 0.25, "reversal": 0.15, "breakout": 0.15, "volume": 0.15}
+        try:
+            # Signal dictionary
+            signals = {"components": {}}
             
-        # Store individual signals
-        signals = {
-            "components": {
-                "trend": trend_signal,
-                "momentum": momentum_signal,
-                "reversal": reversal_signal,
-                "breakout": breakout_signal,
-                "volume": volume_signal
-            }
-        }
-        
-        # Calculate signal score (-100 to +100)
-        signal_score = 0
-        for name, signal in signals["components"].items():
-            signal_value = 0
-            if signal["type"] == SignalType.BUY.value:
-                signal_value = 100 if signal["strength"] == SignalStrength.STRONG.value else 60 if signal["strength"] == SignalStrength.MODERATE.value else 30
-            elif signal["type"] == SignalType.SELL.value:
-                signal_value = -100 if signal["strength"] == SignalStrength.STRONG.value else -60 if signal["strength"] == SignalStrength.MODERATE.value else -30
-            signal_score += signal_value * weights[name]
+            # Generate component signals
+            trend = self._simple_trend_signal(data)
+            momentum = self._simple_momentum_signal(data)
             
-        # Determine overall signal
-        if signal_score > 50:
-            overall_type = SignalType.BUY.value
-            overall_strength = SignalStrength.STRONG.value if signal_score > 75 else SignalStrength.MODERATE.value
-        elif signal_score < -50:
-            overall_type = SignalType.SELL.value
-            overall_strength = SignalStrength.STRONG.value if signal_score < -75 else SignalStrength.MODERATE.value
-        else:
-            overall_type = SignalType.HOLD.value
-            overall_strength = SignalStrength.MODERATE.value if abs(signal_score) > 25 else SignalStrength.WEAK.value
+            signals["components"]["trend"] = trend
+            signals["components"]["momentum"] = momentum
+            
+            # Determine overall signal with risk-based weights
+            if self.risk_appetite == "conservative":
+                trend_weight, momentum_weight = 0.7, 0.3
+            elif self.risk_appetite == "aggressive":
+                trend_weight, momentum_weight = 0.3, 0.7
+            else:  # moderate
+                trend_weight, momentum_weight = 0.5, 0.5
                 
-        signals["overall"] = {
-            "type": overall_type,
-            "strength": overall_strength,
-            "score": signal_score,
-            "risk_appetite": self.risk_appetite
-        }
-        
-        # Generate risk management recommendations
-        if overall_type == SignalType.BUY.value:
-            signals["risk_management"] = self._calculate_buy_risk_management(data)
-        elif overall_type == SignalType.SELL.value:
-            signals["risk_management"] = self._calculate_sell_risk_management(data)
-        
-        return signals
+            # Calculate score (-100 to +100)
+            trend_score = self._component_to_score(trend)
+            momentum_score = self._component_to_score(momentum)
+            signal_score = (trend_score * trend_weight) + (momentum_score * momentum_weight)
+                
+            # Determine overall signal
+            if signal_score > 50:
+                overall_type = "buy"
+                overall_strength = "strong" if signal_score > 75 else "moderate"
+            elif signal_score < -50:
+                overall_type = "sell"
+                overall_strength = "strong" if signal_score < -75 else "moderate"
+            else:
+                overall_type = "hold"
+                overall_strength = "moderate" if abs(signal_score) > 25 else "weak"
+                    
+            signals["overall"] = {
+                "type": overall_type,
+                "strength": overall_strength,
+                "score": signal_score,
+                "risk_appetite": self.risk_appetite
+            }
+            
+            # Generate risk management
+            if overall_type == "buy":
+                signals["risk_management"] = self._calculate_buy_risk_management(data)
+            elif overall_type == "sell":
+                signals["risk_management"] = self._calculate_sell_risk_management(data)
+                
+            # Generate signal text
+            signals["signal_text"] = self._generate_signal_text(signals["overall"], signals.get("risk_management"))
+            
+            return signals
+                
+        except Exception as e:
+            print(f"Error generating trading signals: {e}")
+            return {"overall": {"type": "hold", "strength": "weak"}, "components": {}}
     
-    # Helper method implementation stubs (these would be fully implemented)
-    def _generate_trend_signal(self, data): pass
-    def _generate_momentum_signal(self, data): pass
-    def _generate_reversal_signal(self, data): pass
-    def _generate_breakout_signal(self, data): pass
-    def _generate_volume_signal(self, data): pass
+    def _component_to_score(self, component):
+        """Convert a component signal to a score between -100 and 100."""
+        signal_type = component["type"]
+        strength = component["strength"]
+        
+        if signal_type == "buy":
+            return 100 if strength == "strong" else 60 if strength == "moderate" else 30
+        elif signal_type == "sell":
+            return -100 if strength == "strong" else -60 if strength == "moderate" else -30
+        return 0
+    
+    def _simple_trend_signal(self, data):
+        """Generate a simple trend signal based on moving averages."""
+        try:
+            # Check if we have SMAs
+            latest = data.iloc[-1]
+            has_sma = 'SMA_20' in latest and 'SMA_50' in latest
+            
+            if has_sma:
+                # Moving average crossover
+                sma_20 = latest['SMA_20']
+                sma_50 = latest['SMA_50']
+                close = latest['Close']
+                
+                if close > sma_20 > sma_50:
+                    return {"type": "buy", "strength": "strong", "reason": "Strong uptrend"}
+                elif close > sma_20 and sma_20 < sma_50:
+                    return {"type": "buy", "strength": "moderate", "reason": "Potential trend change to bullish"}
+                elif close < sma_20 < sma_50:
+                    return {"type": "sell", "strength": "strong", "reason": "Strong downtrend"}
+                elif close < sma_20 and sma_20 > sma_50:
+                    return {"type": "sell", "strength": "moderate", "reason": "Potential trend change to bearish"}
+                else:
+                    return {"type": "hold", "strength": "weak", "reason": "No clear trend"}
+            else:
+                # Simple price action
+                if len(data) >= 10:
+                    short_term = data['Close'].iloc[-1] > data['Close'].iloc[-5]
+                    if short_term:
+                        return {"type": "buy", "strength": "weak", "reason": "Recent price increase"}
+                    else:
+                        return {"type": "sell", "strength": "weak", "reason": "Recent price decrease"}
+                
+            return {"type": "hold", "strength": "weak", "reason": "Insufficient data"}
+        except Exception as e:
+            print(f"Error in trend signal: {e}")
+            return {"type": "hold", "strength": "weak", "reason": "Error in analysis"}
+    
+    def _simple_momentum_signal(self, data):
+        """Generate a simple momentum signal based on RSI or price momentum."""
+        try:
+            latest = data.iloc[-1]
+            has_rsi = 'RSI' in latest
+            
+            if has_rsi:
+                rsi = latest['RSI']
+                if rsi < 30:
+                    return {"type": "buy", "strength": "strong", "reason": "Oversold (RSI)"}
+                elif rsi < 40:
+                    return {"type": "buy", "strength": "moderate", "reason": "Approaching oversold (RSI)"}
+                elif rsi > 70:
+                    return {"type": "sell", "strength": "strong", "reason": "Overbought (RSI)"}
+                elif rsi > 60:
+                    return {"type": "sell", "strength": "moderate", "reason": "Approaching overbought (RSI)"}
+                else:
+                    return {"type": "hold", "strength": "weak", "reason": "Neutral momentum (RSI)"}
+            else:
+                # Simple momentum based on price changes
+                if len(data) >= 10:
+                    returns = data['Close'].pct_change(5).iloc[-1] * 100
+                    if returns > 5:
+                        return {"type": "sell", "strength": "moderate", "reason": "Potential overbought"}
+                    elif returns < -5:
+                        return {"type": "buy", "strength": "moderate", "reason": "Potential oversold"}
+                    
+            return {"type": "hold", "strength": "weak", "reason": "Neutral momentum"}
+        except Exception as e:
+            print(f"Error in momentum signal: {e}")
+            return {"type": "hold", "strength": "weak", "reason": "Error in analysis"}
     
     def _calculate_buy_risk_management(self, data):
         """Calculate risk management for buy signals."""
-        current_price = data['Close'].iloc[-1]
-        atr = data.get('ATR', pd.Series()).iloc[-1] or current_price * 0.02
-        
-        # Simple implementation - in full code would use support/resistance
-        stop_loss = max(current_price - atr * 3, data['Low'].tail(10).min() * 0.98)
-        take_profit_1 = current_price + atr * 2
-        take_profit_2 = current_price + atr * 4
-        
-        return {
-            "entry": float(current_price),
-            "stop_loss": float(stop_loss),
-            "take_profit_1": float(take_profit_1),
-            "take_profit_2": float(take_profit_2),
-            "risk_reward": float((take_profit_1 - current_price) / (current_price - stop_loss)) if current_price > stop_loss else 0,
-            "position_size": f"{2}% account risk"  # Simplified
-        }
+        try:
+            latest_close = data['Close'].iloc[-1]
+            # Simple stoploss at 3-5% below entry
+            stop_loss = latest_close * 0.95
+            
+            # Take profit at 1.5x-2x the risk
+            risk = latest_close - stop_loss
+            take_profit_1 = latest_close + risk * 1.5
+            take_profit_2 = latest_close + risk * 2.0
+            
+            return {
+                "entry": float(latest_close),
+                "stop_loss": float(stop_loss),
+                "take_profit_1": float(take_profit_1),
+                "take_profit_2": float(take_profit_2),
+                "risk_reward": 1.5
+            }
+        except Exception as e:
+            print(f"Error in risk management: {e}")
+            return None
     
     def _calculate_sell_risk_management(self, data):
         """Calculate risk management for sell signals."""
-        # Similar to buy but reversed (implementation omitted for brevity)
-        return {}
+        try:
+            latest_close = data['Close'].iloc[-1]
+            # Simple stoploss at 3-5% above entry
+            stop_loss = latest_close * 1.05
+            
+            # Take profit at 1.5x-2x the risk
+            risk = stop_loss - latest_close
+            take_profit_1 = latest_close - risk * 1.5
+            take_profit_2 = latest_close - risk * 2.0
+            
+            return {
+                "entry": float(latest_close),
+                "stop_loss": float(stop_loss),
+                "take_profit_1": float(take_profit_1),
+                "take_profit_2": float(take_profit_2),
+                "risk_reward": 1.5
+            }
+        except Exception as e:
+            print(f"Error in risk management: {e}")
+            return None
+    
+    def _generate_signal_text(self, overall, risk_management):
+        """Generate a human-readable signal text."""
+        try:
+            signal_type = overall["type"]
+            strength = overall["strength"]
+            
+            if signal_type == "buy":
+                text = f"{strength.capitalize()} buy signal detected"
+                
+                if risk_management:
+                    entry = risk_management["entry"]
+                    stop = risk_management["stop_loss"]
+                    tp = risk_management["take_profit_1"]
+                    text += f". Entry: ${entry:.2f}, Stop: ${stop:.2f}, Target: ${tp:.2f}"
+                
+                return text
+                
+            elif signal_type == "sell":
+                text = f"{strength.capitalize()} sell signal detected"
+                
+                if risk_management:
+                    entry = risk_management["entry"]
+                    stop = risk_management["stop_loss"]
+                    tp = risk_management["take_profit_1"]
+                    text += f". Entry: ${entry:.2f}, Stop: ${stop:.2f}, Target: ${tp:.2f}"
+                
+                return text
+                
+            else:  # hold
+                return "No clear signal. Recommend holding or staying out of the market."
+                
+        except Exception as e:
+            print(f"Error generating signal text: {e}")
+            return "Signal analysis error"
 
-# Function to generate trading signals
+# Helper function to generate trading signals
 def generate_trading_signals(data, risk_appetite="moderate"):
     """Generate trading signals for the given data."""
     generator = SignalGenerator(risk_appetite)
@@ -1429,115 +1457,8 @@ def generate_chart(data, symbol, forecast=None, timeframe="1mo"):
         print(f"Error generating chart: {e}")
         # Return a default filename if chart generation fails
         return "chart_error.png"
-    
-# ---------------------------
-# Flask Routes
-# ---------------------------
-@app.route("/")
-def index():
-    return "Red Tape Trading API is running."
 
-@app.route("/process", methods=["GET"])
-def process():
-    symbol = request.args.get("symbol", "AAPL")
-    timeframe = request.args.get("timeframe", "1mo")
-    news_count = int(request.args.get("news_count", "5"))
-    risk_appetite = request.args.get("risk_appetite", "moderate")
-    print(f"Received request for symbol: {symbol} with timeframe: {timeframe}")
-    try:
-        # Use a timer to track execution time
-        start_time = datetime.now()
-        # Fetch data first - this is the most critical part
-        data = fetch_data(symbol, timeframe)
-        # Generate enhanced forecast - this is also essential
-        try:
-            forecast = enhanced_forecast(data, periods=5, timeframe=timeframe)
-        except Exception as e:
-            print(f"Error in enhanced forecast, using basic forecast: {e}")
-            # Fall back to basic forecast
-            if timeframe.endswith('min') or timeframe.endswith('h'):
-                forecast = linear_regression_forecast(data, periods=5, degree=2)
-            else:
-                try:
-                    arima_model = create_arima_model(data)
-                    forecast = arima_prediction(arima_model)
-                except:
-                    forecast = linear_regression_forecast(data, periods=5, degree=1)
-        # Prepare chart data - needed for the UI
-        chart_data = get_chart_data(data, forecast, timeframe)
-        # Start with a basic response that will work even if other parts timeout
-        response = {
-            "forecast": forecast,
-            "chartData": {"symbol": symbol.upper(), **chart_data},
-            "news": [{"title": "Loading news...", "source": {"name": "Trading System"}, "summary": "News will be available on next refresh."}]
-        }
-        # Generate chart in the background
-        try:
-            chart_filename = generate_chart(data, symbol, forecast=forecast, timeframe=timeframe)
-            response["chart_path"] = chart_filename
-        except Exception as e:
-            print(f"Error generating chart: {e}")
-            response["chart_path"] = "chart_error.png"
-        # Check time elapsed and prioritize remaining operations
-        elapsed = (datetime.now() - start_time).total_seconds()
-        if elapsed > 15:  # If we're already taking too long, return what we have
-            print(f"Request taking too long ({elapsed:.2f}s), returning partial data")
-            return jsonify(response)
-        # Now process additional data in order of importance
-        # 1. Technical indicators
-        try:
-            data_with_indicators = calculate_technical_indicators(data)
-            key_indicators = extract_key_indicators(data_with_indicators)
-            if key_indicators:
-                response["key_indicators"] = key_indicators
-        except Exception as e:
-            print(f"Error calculating indicators: {e}")
-        # 2. News data
-        elapsed = (datetime.now() - start_time).total_seconds()
-        if elapsed < 18:  # Still have time
-            try:
-                news = fetch_news(symbol, max_items=news_count)
-                if news:
-                    response["news"] = news
-            except Exception as e:
-                print(f"Error fetching news: {e}")
-        # 3. Market regime detection
-        elapsed = (datetime.now() - start_time).total_seconds()
-        if elapsed < 20:  # Still have time
-            try:
-                regime = detect_market_regime(data)
-                response["market_regime"] = regime
-                print(f"Detected market regime: {regime}")
-            except Exception as e:
-                print(f"Error detecting market regime: {e}")
-                regime = "unknown"
-        else:
-            regime = "unknown"
-        # 4. Trading signals
-        elapsed = (datetime.now() - start_time).total_seconds()
-        if elapsed < 22:  # Still have time
-            try:
-                signals = generate_trading_signals(data_with_indicators, risk_appetite)
-                response["trading_signals"] = signals
-            except Exception as e:
-                print(f"Error generating trading signals: {e}")
-        # 5. Enhanced sentiment analysis
-        elapsed = (datetime.now() - start_time).total_seconds()
-        if elapsed < 25:  # Still have time
-            try:
-                sentiment = analyze_news_sentiment(symbol)
-                if sentiment:
-                    response["sentiment_analysis"] = sentiment
-            except Exception as e:
-                print(f"Error analyzing sentiment: {e}")
-        # Return the response with whatever we managed to calculate
-        print(f"Total processing time: {(datetime.now() - start_time).total_seconds():.2f}s")
-        return jsonify(response)
-    except Exception as e:
-        print(f"Error processing request: {e}")
-        return jsonify({"error": str(e)}), 500
-
-# Helper to extract key indicators for response
+# Helper function to extract key indicators for response
 def extract_key_indicators(data_with_indicators):
     """Extract key technical indicators for the response."""
     indicators = {}
@@ -1562,6 +1483,178 @@ def extract_key_indicators(data_with_indicators):
     except Exception as e:
         print(f"Error extracting indicators: {e}")
         return {}
+    
+# ---------------------------
+# Flask Routes
+# ---------------------------
+@app.route("/")
+def index():
+    return "Red Tape Trading API is running."
+
+@app.route("/process", methods=["GET"])
+def process():
+    symbol = request.args.get("symbol", "AAPL")
+    timeframe = request.args.get("timeframe", "1mo")
+    news_count = int(request.args.get("news_count", "5"))
+    risk_appetite = request.args.get("risk_appetite", "moderate")
+    print(f"Received request for symbol: {symbol} with timeframe: {timeframe}")
+    try:
+        # Use a timer to track execution time
+        start_time = datetime.now()
+        
+        # Fetch data first - this is the most critical part
+        data = fetch_data(symbol, timeframe)
+        
+        # Generate enhanced forecast - this is also essential
+        try:
+            forecast = enhanced_forecast(data, periods=5, timeframe=timeframe)
+        except Exception as e:
+            print(f"Error in enhanced forecast, using basic forecast: {e}")
+            # Fall back to basic forecast
+            if timeframe.endswith('min') or timeframe.endswith('h'):
+                forecast = linear_regression_forecast(data, periods=5, degree=2)
+            else:
+                try:
+                    arima_model = create_arima_model(data)
+                    forecast = arima_prediction(arima_model)
+                except:
+                    forecast = linear_regression_forecast(data, periods=5, degree=1)
+        
+        # Prepare chart data - needed for the UI
+        chart_data = get_chart_data(data, forecast, timeframe)
+        
+        # Start with a basic response that will work even if other parts timeout
+        response = {
+            "forecast": forecast,
+            "chartData": {"symbol": symbol.upper(), **chart_data},
+            "news": [{"title": "Loading news...", "source": {"name": "Trading System"}, "summary": "News will be available on next refresh."}],
+            "openai_refined_prediction": f"Analysis for {symbol}: Based on technical analysis, the forecast suggests a trend from ${data['Close'].iloc[-1]:.2f} to ${forecast[-1]:.2f} over the {timeframe} timeframe."
+        }
+        
+        # Generate chart in the background
+        try:
+            chart_filename = generate_chart(data, symbol, forecast=forecast, timeframe=timeframe)
+            response["chart_path"] = chart_filename
+        except Exception as e:
+            print(f"Error generating chart: {e}")
+            response["chart_path"] = "chart_error.png"
+            
+        # Check time elapsed and prioritize remaining operations
+        elapsed = (datetime.now() - start_time).total_seconds()
+        if elapsed > 15:  # If we're already taking too long, return what we have
+            print(f"Request taking too long ({elapsed:.2f}s), returning partial data")
+            return jsonify(response)
+            
+        # Now process additional data in order of importance
+        # 1. Technical indicators
+        try:
+            data_with_indicators = calculate_technical_indicators(data)
+            key_indicators = extract_key_indicators(data_with_indicators)
+            if key_indicators:
+                response["key_indicators"] = key_indicators
+        except Exception as e:
+            print(f"Error calculating indicators: {e}")
+            data_with_indicators = data.copy()
+            
+        # 2. News data
+        elapsed = (datetime.now() - start_time).total_seconds()
+        if elapsed < 18:  # Still have time
+            try:
+                news = fetch_news(symbol, max_items=news_count)
+                if news:
+                    response["news"] = news
+            except Exception as e:
+                print(f"Error fetching news: {e}")
+                
+        # 3. Market regime detection
+        elapsed = (datetime.now() - start_time).total_seconds()
+        regime = "unknown"
+        if elapsed < 20:  # Still have time
+            try:
+                regime = detect_market_regime(data)
+                response["market_regime"] = regime
+                print(f"Detected market regime: {regime}")
+            except Exception as e:
+                print(f"Error detecting market regime: {e}")
+                
+        # 4. Generate AI analysis without OpenAI if possible
+        elapsed = (datetime.now() - start_time).total_seconds()
+        if elapsed < 22:
+            try:
+                # Check if OpenAI API key is available
+                if openai.api_key:
+                    try:
+                        # Try to get analysis from OpenAI
+                        price_change = (forecast[-1] - data["Close"].iloc[-1]) / data["Close"].iloc[-1] * 100
+                        direction = "bullish" if price_change > 0 else "bearish"
+                        
+                        openai_response = openai.ChatCompletion.create(
+                            model="gpt-3.5-turbo",
+                            messages=[
+                                {"role": "system", "content": "You are a financial analyst providing concise stock analysis."},
+                                {"role": "user", "content": f"Provide a brief analysis for {symbol} in {timeframe} timeframe. Current price: ${data['Close'].iloc[-1]:.2f}, Forecast end price: ${forecast[-1]:.2f}, Direction: {direction}, Change: {price_change:.2f}%. Market regime: {regime}."}
+                            ],
+                            max_tokens=300
+                        )
+                        ai_analysis = openai_response.choices[0].message.content
+                        response["openai_refined_prediction"] = ai_analysis
+                    except Exception as e:
+                        print(f"Error with OpenAI API: {e}")
+                else:
+                    print("OpenAI API key not set, using simplified analysis")
+            except Exception as e:
+                print(f"Error generating AI analysis: {e}")
+                
+            # Fallback if OpenAI analysis failed
+            if "openai_refined_prediction" not in response or not response["openai_refined_prediction"]:
+                price_change = (forecast[-1] - data["Close"].iloc[-1]) / data["Close"].iloc[-1] * 100
+                direction = "bullish" if price_change > 0 else "bearish"
+                
+                # Create a simple analysis based on technical indicators
+                simple_analysis = f"""
+                # Analysis for {symbol.upper()} ({timeframe})
+                
+                The forecast indicates a {direction} trend for {symbol.upper()} in the {timeframe} timeframe.
+                
+                ## Key Points
+                - Current price: ${data["Close"].iloc[-1]:.2f}
+                - Forecast end price: ${forecast[-1]:.2f} ({price_change:.2f}%)
+                - Market regime: {regime}
+                
+                ## Technical Indicators
+                """
+                
+                if "key_indicators" in response:
+                    if "RSI" in response["key_indicators"]:
+                        rsi = response["key_indicators"]["RSI"]
+                        rsi_comment = "overbought" if rsi > 70 else "oversold" if rsi < 30 else "neutral"
+                        simple_analysis += f"- RSI: {rsi:.1f} ({rsi_comment})\n"
+                        
+                    if "trend" in response["key_indicators"]:
+                        simple_analysis += f"- Trend: {response['key_indicators']['trend']}\n"
+                
+                simple_analysis += f"\n## Trading Strategy\nConsider a {direction} position with appropriate risk management."
+                
+                response["openai_refined_prediction"] = simple_analysis
+            
+        # 5. Generate trading signals
+        elapsed = (datetime.now() - start_time).total_seconds()
+        if elapsed < 25:  # Still have time
+            try:
+                signals = generate_trading_signals(data_with_indicators, risk_appetite)
+                response["trading_signals"] = signals
+            except Exception as e:
+                print(f"Error generating trading signals: {e}")
+            
+        # Return the response with whatever we managed to calculate
+        print(f"Total processing time: {(datetime.now() - start_time).total_seconds():.2f}s")
+        return jsonify(response)
+    except Exception as e:
+        print(f"Error processing request: {e}")
+        return jsonify({
+            "error": str(e),
+            "openai_refined_prediction": f"Error analyzing {symbol}: {str(e)}. Please try again later."
+        }), 500
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8080))
