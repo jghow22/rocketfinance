@@ -298,6 +298,124 @@ def mark_extended_hours(data):
     return df
 
 # ---------------------------
+# News Fetching Function
+# ---------------------------
+def fetch_news(symbol, max_items=5):
+    """
+    Fetch actual news articles for the symbol from a news API.
+    Args:
+        symbol: The stock symbol to fetch news for
+        max_items: Maximum number of news items to return
+    Returns:
+        A list of news articles, each with title, source, and summary
+    """
+    try:
+        # Get API key from environment variables
+        news_api_key = os.getenv("NEWSAPI_KEY")
+        if not news_api_key:
+            print("Warning: NewsAPI key not set, using placeholder news")
+            return get_placeholder_news(symbol)
+        
+        # Prepare the query - search for both the symbol and company name if possible
+        company_names = {
+            "AAPL": "Apple",
+            "MSFT": "Microsoft",
+            "GOOGL": "Google",
+            "AMZN": "Amazon",
+            "META": "Meta Facebook",
+            "TSLA": "Tesla",
+            "NVDA": "NVIDIA",
+            "JPM": "JPMorgan",
+            "BAC": "Bank of America",
+            "WMT": "Walmart",
+            "DIS": "Disney",
+            "NFLX": "Netflix",
+            "XOM": "Exxon",
+            "CVX": "Chevron",
+            "PFE": "Pfizer",
+            "JNJ": "Johnson & Johnson"
+            # Add more common symbols and company names as needed
+        }
+        
+        # Construct query using both symbol and company name if available
+        query = symbol
+        if symbol.upper() in company_names:
+            query = f"{symbol} OR {company_names[symbol.upper()]}"
+        
+        # Build API request
+        url = "https://newsapi.org/v2/everything"
+        params = {
+            "q": query,
+            "apiKey": news_api_key,
+            "language": "en",
+            "sortBy": "publishedAt",
+            "pageSize": max_items
+        }
+        
+        # Set timeout to avoid blocking
+        timeout = 5  # seconds
+        response = requests.get(url, params=params, timeout=timeout)
+        
+        if response.status_code != 200:
+            print(f"NewsAPI error: Status {response.status_code}")
+            return get_placeholder_news(symbol)
+        
+        data = response.json()
+        if data.get("status") != "ok" or "articles" not in data:
+            print(f"NewsAPI error: {data.get('message', 'Unknown error')}")
+            return get_placeholder_news(symbol)
+        
+        articles = data["articles"]
+        
+        # Format the response
+        news = []
+        for article in articles:
+            # Summarize the content if it's too long
+            content = article.get("content", article.get("description", ""))
+            if content and len(content) > 300:
+                summary = content[:297] + "..."
+            else:
+                summary = content
+            
+            news.append({
+                "title": article.get("title", ""),
+                "source": {"name": article.get("source", {}).get("name", "Unknown Source")},
+                "summary": summary,
+                "url": article.get("url", ""),
+                "publishedAt": article.get("publishedAt", "")
+            })
+        
+        return news
+    except Exception as e:
+        print(f"Error fetching news: {e}")
+        return get_placeholder_news(symbol)
+
+def get_placeholder_news(symbol):
+    """Return placeholder news when the API is unavailable."""
+    current_date = datetime.now().strftime("%Y-%m-%d")
+    news = [
+        {
+            "title": f"{symbol.upper()} stock shows market volatility",
+            "source": {"name": "Market Insight"},
+            "summary": f"Recent trading of {symbol.upper()} demonstrates ongoing market volatility as investors respond to broader economic indicators and company-specific developments.",
+            "publishedAt": current_date
+        },
+        {
+            "title": f"Analysts issue updated guidance on {symbol.upper()}",
+            "source": {"name": "Financial Observer"},
+            "summary": f"Investment analysts have issued new price targets for {symbol.upper()}, reflecting revised expectations based on recent performance and forward outlook.",
+            "publishedAt": current_date
+        },
+        {
+            "title": f"{symbol.upper()} in focus as market evaluates sector trends",
+            "source": {"name": "Trading View"},
+            "summary": f"Investors are closely watching {symbol.upper()} as a possible indicator of broader sector performance. Technical analysis suggests watching key support and resistance levels.",
+            "publishedAt": current_date
+        }
+    ]
+    return news
+
+# ---------------------------
 # Technical Indicators Calculation
 # ---------------------------
 def calculate_technical_indicators(data):
@@ -988,6 +1106,87 @@ def improved_ensemble_forecast(data, periods=5, timeframe="1day"):
         print(f"Error in improved ensemble forecast: {e}")
         return enhanced_forecast(data, periods, timeframe)
 
+def regime_aware_forecast(data, periods=5, timeframe="1day"):
+    """
+    Generate forecasts that adapt to the current market regime.
+    """
+    try:
+        # Detect market regime
+        regime = detect_market_regime(data)
+        print(f"Using regime-aware forecasting for {regime} regime")
+        
+        if regime == "trending_up":
+            # Use trend-following forecast with enhanced volatility
+            if timeframe.endswith('min') or timeframe.endswith('h'):
+                base_forecast = linear_regression_forecast(data, periods, degree=2)
+            else:
+                try:
+                    arima_model = create_arima_model(data)
+                    base_forecast = arima_prediction(arima_model)
+                except:
+                    base_forecast = linear_regression_forecast(data, periods, degree=1)
+            
+            # Enhance trend slightly
+            enhanced_trend = []
+            last_close = data['Close'].iloc[-1]
+            trend_rate = (base_forecast[-1] - base_forecast[0]) / (periods * last_close)
+            
+            for i in range(periods):
+                # Accentuate the trend a bit
+                enhanced_trend.append(last_close * (1 + trend_rate * (i + 1) * 1.1))
+            
+            return adjust_forecast_volatility(enhanced_trend, data)
+            
+        elif regime == "trending_down":
+            # Similar to trending_up but with downward bias
+            if timeframe.endswith('min') or timeframe.endswith('h'):
+                base_forecast = linear_regression_forecast(data, periods, degree=2)
+            else:
+                try:
+                    arima_model = create_arima_model(data)
+                    base_forecast = arima_prediction(arima_model)
+                except:
+                    base_forecast = linear_regression_forecast(data, periods, degree=1)
+            
+            # Enhance downtrend slightly
+            enhanced_trend = []
+            last_close = data['Close'].iloc[-1]
+            trend_rate = (base_forecast[-1] - base_forecast[0]) / (periods * last_close)
+            
+            for i in range(periods):
+                # Accentuate the downtrend a bit
+                enhanced_trend.append(last_close * (1 + trend_rate * (i + 1) * 1.1))
+            
+            return adjust_forecast_volatility(enhanced_trend, data)
+            
+        elif regime == "mean_reverting":
+            # Use mean reversion forecast
+            return mean_reversion_forecast(data, periods)
+            
+        elif regime == "volatile":
+            # Use ensemble with higher volatility
+            base_forecast = enhanced_forecast(data, periods, timeframe)
+            
+            # Add more volatility
+            returns = np.diff(data["Close"].values) / data["Close"].values[:-1]
+            volatility = np.std(returns[-min(30, len(returns)):]) * 1.5  # Increase volatility
+            
+            volatile_forecast = [base_forecast[0]]
+            for i in range(1, len(base_forecast)):
+                random_component = volatile_forecast[i-1] * volatility * np.random.normal(0, 1.2)
+                new_price = base_forecast[i] + random_component
+                volatile_forecast.append(new_price)
+            
+            return volatile_forecast
+            
+        else:  # unknown regime
+            # Use the standard ensemble forecast
+            return improved_ensemble_forecast(data, periods, timeframe)
+            
+    except Exception as e:
+        print(f"Error in regime-aware forecast: {e}")
+        return enhanced_forecast(data, periods, timeframe)
+
 def market_aware_forecast(data, periods=5, timeframe="1day", symbol="AAPL"):
     """
     Forecast that incorporates market sentiment, sector performance, and now extended hours data.
@@ -1395,290 +1594,440 @@ def get_chart_data(data, forecast, timeframe):
     return result
 
 # ---------------------------
-# Chart Generation with Candlestick + Continuous Forecast
+# Automated Trading Signals
 # ---------------------------
-def generate_chart(data, symbol, forecast=None, timeframe="1mo"):
-    """
-    Generate a chart image.
-    - If OHLC columns are present (daily data), create a dark-themed candlestick chart.
-    - For intraday data (or if OHLC is missing), fall back to a simple dark line chart.
-    Now includes extended hours visualization if available.
-    
-    Args:
-        data (pd.DataFrame): Historical price data
-        symbol (str): Stock symbol
-        forecast (list, optional): Forecast prices
-        timeframe (str): Time period for the data
-        
-    Returns:
-        str: Chart filename
-    """
-    try:
-        os.makedirs("static", exist_ok=True)
-        filename = f"chart_{symbol.upper()}.png"
-        filepath = os.path.join("static", filename)
-        
-        # Check if we have extended hours data
-        has_extended_hours = 'session' in data.columns
-        
-        # Check for OHLC => use candlestick
-        if {"Open", "High", "Low", "Close"}.issubset(data.columns):
-            try:
-                import mplfinance as mpf
-                data_filled = data.ffill()
-                dark_style = create_dark_style()
-                
-                # If we have extended hours data, potentially split by session
-                if has_extended_hours:
-                    try:
-                        # Create plot with extended hours
-                        fig, axes = plt.subplots(figsize=(10, 6), facecolor='black')
-                        axes.set_facecolor('black')
-                        
-                        # Split data by session type
-                        regular_data = data_filled[data_filled['session'] == 'regular'].copy()
-                        pre_market_data = data_filled[data_filled['session'] == 'pre-market'].copy()
-                        after_hours_data = data_filled[data_filled['session'] == 'after-hours'].copy()
-                        
-                        # Plot each session type with different colors
-                        if not regular_data.empty:
-                            mpf.plot(
-                                regular_data,
-                                type='candle',
-                                style=dark_style,
-                                ax=axes,
-                                title=f"{symbol.upper()} with Extended Hours",
-                                ylabel="Price",
-                                datetime_format='%Y-%m-%d %H:%M',
-                                show_nontrading=True
-                            )
-                        
-                        # Add pre-market with different color
-                        if not pre_market_data.empty:
-                            # Create and apply lighter style for pre-market
-                            pre_market_mc = mpf.make_marketcolors(
-                                up='lightblue', down='purple',
-                                edge='white', wick='white', volume='in'
-                            )
-                            pre_market_style = mpf.make_mpf_style(
-                                base_mpf_style='nightclouds',
-                                marketcolors=pre_market_mc
-                            )
-                            
-                            mpf.plot(
-                                pre_market_data,
-                                type='candle',
-                                style=pre_market_style,
-                                ax=axes,
-                                datetime_format='%Y-%m-%d %H:%M',
-                                show_nontrading=True,
-                                addplot=[mpf.make_addplot(pre_market_data['Close'], ax=axes, scatter=False, color='cyan', linestyle='--', width=0.7)]
-                            )
-                        
-                        # Add after-hours with different color
-                        if not after_hours_data.empty:
-                            # Create and apply lighter style for after-hours
-                            after_hours_mc = mpf.make_marketcolors(
-                                up='lightgreen', down='orange',
-                                edge='white', wick='white', volume='in'
-                            )
-                            after_hours_style = mpf.make_mpf_style(
-                                base_mpf_style='nightclouds',
-                                marketcolors=after_hours_mc
-                            )
-                            
-                            mpf.plot(
-                                after_hours_data,
-                                type='candle',
-                                style=after_hours_style,
-                                ax=axes,
-                                datetime_format='%Y-%m-%d %H:%M',
-                                show_nontrading=True,
-                                addplot=[mpf.make_addplot(after_hours_data['Close'], ax=axes, scatter=False, color='orange', linestyle='--', width=0.7)]
-                            )
-                        
-                        # Add legend to distinguish sessions
-                        from matplotlib.lines import Line2D
-                        legend_elements = [
-                            Line2D([0], [0], color='white', marker='s', markersize=10, label='Regular Hours', markerfacecolor='lime'),
-                            Line2D([0], [0], color='white', marker='s', markersize=10, label='Pre-Market', markerfacecolor='lightblue'),
-                            Line2D([0], [0], color='white', marker='s', markersize=10, label='After-Hours', markerfacecolor='orange')
-                        ]
-                        axes.legend(handles=legend_elements, loc='upper left')
-                        
-                        # Overlay forecast if available
-                        if forecast and len(forecast) > 0:
-                            chart_info = get_chart_data(data_filled, forecast, timeframe)
-                            f_dates = pd.to_datetime(chart_info["forecastDates"])
-                            last_close = data_filled["Close"].iloc[-1]
-                            
-                            # Flat connector
-                            axes.plot(
-                                [data_filled.index[-1], f_dates[0]],
-                                [last_close, last_close],
-                                linestyle="--", color="yellow", linewidth=2, label="Connector"
-                            )
-                            
-                            # Forecast line
-                            axes.plot(
-                                [data_filled.index[-1]] + list(f_dates),
-                                [last_close] + forecast,
-                                linestyle="--", marker="o", color="cyan", linewidth=2, label="Forecast"
-                            )
-                        
-                        fig.savefig(filepath, facecolor=fig.get_facecolor(), edgecolor='none')
-                        plt.close(fig)
-                        
-                    except Exception as e:
-                        print(f"Error plotting extended hours: {e}")
-                        # Fall back to standard plot
-                        has_extended_hours = False
-                
-                # Standard candlestick plot (if no extended hours or the extended hours plot failed)
-                if not has_extended_hours:
-                    # Plot candlestick
-                    fig, axes = mpf.plot(
-                        data_filled,
-                        type='candle',
-                        style=dark_style,
-                        title=f"{symbol.upper()} Candlestick Chart",
-                        ylabel="Price",
-                        returnfig=True
-                    )
-                    
-                    # axes may be tuple/list
-                    ax = axes[0] if isinstance(axes, (list, tuple)) else axes
-                    fig.patch.set_facecolor("black")
-                    ax.set_facecolor("black")
-                    
-                    # Overlay forecast
-                    if forecast and len(forecast) > 0:
-                        chart_info = get_chart_data(data_filled, forecast, timeframe)
-                        f_dates = pd.to_datetime(chart_info["forecastDates"])
-                        last_close = data_filled["Close"].iloc[-1]
-                        
-                        # Flat connector
-                        ax.plot(
-                            [data_filled.index[-1], f_dates[0]],
-                            [last_close, last_close],
-                            linestyle="--", color="yellow", linewidth=2, label="Connector"
-                        )
-                        
-                        # Forecast line
-                        ax.plot(
-                            [data_filled.index[-1]] + list(f_dates),
-                            [last_close] + forecast,
-                            linestyle="--", marker="o", color="cyan", linewidth=2, label="Forecast"
-                        )
-                        
-                        ax.legend()
-                        
-                    fig.savefig(filepath, facecolor=fig.get_facecolor(), edgecolor='none')
-                    plt.close(fig)
-                
-            except Exception as e:
-                print(f"Error using mplfinance for candlestick chart: {e}")
-                # Fall back to line chart
-                plt.style.use("dark_background")
-                plt.figure(figsize=(10, 5))
-                
-                if has_extended_hours:
-                    # Different colors for different sessions
-                    sessions = data['session'].unique()
-                    for session in sessions:
-                        session_data = data[data['session'] == session]
-                        if not session_data.empty:
-                            color = 'white' if session == 'regular' else 'cyan' if session == 'pre-market' else 'orange'
-                            label = 'Regular Hours' if session == 'regular' else 'Pre-Market' if session == 'pre-market' else 'After-Hours'
-                            plt.plot(session_data.index, session_data["Close"], label=label, color=color)
-                else:
-                    plt.plot(data.index, data["Close"], label="Historical", color="white")
-                
-                if forecast and len(forecast) > 0:
-                    dates = pd.to_datetime(get_chart_data(data, forecast, timeframe)["forecastDates"])
-                    plt.plot(dates, forecast, "--o", color="cyan", label="Forecast")
-                
-                plt.title(f"{symbol.upper()} Prices")
-                plt.xlabel("Date")
-                plt.ylabel("Price")
-                plt.legend()
-                plt.grid(color="dimgray")
-                plt.savefig(filepath)
-                plt.close()
-        else:
-            # Intraday fallback line chart
-            plt.style.use("dark_background")
-            plt.figure(figsize=(10, 5))
-            
-            if has_extended_hours:
-                # Different colors for different sessions
-                sessions = data['session'].unique()
-                for session in sessions:
-                    session_data = data[data['session'] == session]
-                    if not session_data.empty:
-                        color = 'white' if session == 'regular' else 'cyan' if session == 'pre-market' else 'orange'
-                        label = 'Regular Hours' if session == 'regular' else 'Pre-Market' if session == 'pre-market' else 'After-Hours'
-                        plt.plot(session_data.index, session_data["Close"], label=label, color=color)
-            else:
-                plt.plot(data.index, data["Close"], label="Historical", color="white")
-            
-            if forecast and len(forecast) > 0:
-                dates = pd.to_datetime(get_chart_data(data, forecast, timeframe)["forecastDates"])
-                plt.plot(dates, forecast, "--o", color="cyan", label="Forecast")
-            
-            plt.title(f"{symbol.upper()} Prices")
-            plt.xlabel("Date")
-            plt.ylabel("Price")
-            plt.legend()
-            plt.grid(color="dimgray")
-            plt.savefig(filepath)
-            plt.close()
-        
-        print("Chart saved to", filepath)
-        return filename
-    except Exception as e:
-        print(f"Error generating chart: {e}")
-        # Return a default filename if chart generation fails
-        return "chart_error.png"
+class SignalType(Enum):
+    BUY = "buy"
+    SELL = "sell"
+    HOLD = "hold"
 
-# Helper function to extract key indicators for response
-def extract_key_indicators(data_with_indicators):
-    """Extract key technical indicators for the response."""
-    indicators = {}
+class SignalStrength(Enum):
+    STRONG = "strong"
+    MODERATE = "moderate"
+    WEAK = "weak"
+
+class SignalGenerator:
+    """Generate trading signals based on technical indicators and price action."""
+    
+    def __init__(self, risk_appetite="moderate"):
+        """Initialize with risk appetite: conservative, moderate, or aggressive."""
+        self.risk_appetite = risk_appetite
+    
+    def generate_signals(self, data, include_indicators=True):
+        """Generate trading signals from the provided data."""
+        # Safety check for data
+        if not isinstance(data, pd.DataFrame) or len(data) < 5:
+            return {"overall": {"type": "hold", "strength": "weak"}, "components": {}}
+        
+        # Ensure we have indicators
+        if include_indicators:
+            try:
+                data = calculate_technical_indicators(data)
+            except Exception as e:
+                print(f"Error calculating indicators: {e}")
+        
+        try:
+            # Signal dictionary
+            signals = {"components": {}}
+            
+            # Generate component signals
+            trend = self._simple_trend_signal(data)
+            momentum = self._simple_momentum_signal(data)
+            signals["components"]["trend"] = trend
+            signals["components"]["momentum"] = momentum
+            
+            # Determine overall signal with risk-based weights
+            if self.risk_appetite == "conservative":
+                trend_weight, momentum_weight = 0.7, 0.3
+            elif self.risk_appetite == "aggressive":
+                trend_weight, momentum_weight = 0.3, 0.7
+            else:  # moderate
+                trend_weight, momentum_weight = 0.5, 0.5
+            
+            # Calculate score (-100 to +100)
+            trend_score = self._component_to_score(trend)
+            momentum_score = self._component_to_score(momentum)
+            signal_score = (trend_score * trend_weight) + (momentum_score * momentum_weight)
+            
+            # Determine overall signal
+            if signal_score > 50:
+                overall_type = "buy"
+                overall_strength = "strong" if signal_score > 75 else "moderate"
+            elif signal_score < -50:
+                overall_type = "sell"
+                overall_strength = "strong" if signal_score < -75 else "moderate"
+            else:
+                overall_type = "hold"
+                overall_strength = "moderate" if abs(signal_score) > 25 else "weak"
+            
+            signals["overall"] = {
+                "type": overall_type,
+                "strength": overall_strength,
+                "score": signal_score,
+                "risk_appetite": self.risk_appetite
+            }
+            
+            # Generate risk management
+            if overall_type == "buy":
+                signals["risk_management"] = self._calculate_buy_risk_management(data)
+            elif overall_type == "sell":
+                signals["risk_management"] = self._calculate_sell_risk_management(data)
+            
+            # Generate signal text
+            signals["signal_text"] = self._generate_signal_text(signals["overall"], signals.get("risk_management"))
+            
+            return signals
+        
+        except Exception as e:
+            print(f"Error generating trading signals: {e}")
+            return {"overall": {"type": "hold", "strength": "weak"}, "components": {}}
+    
+    def _component_to_score(self, component):
+        """Convert a component signal to a score between -100 and 100."""
+        signal_type = component["type"]
+        strength = component["strength"]
+        
+        if signal_type == "buy":
+            return 100 if strength == "strong" else 60 if strength == "moderate" else 30
+        elif signal_type == "sell":
+            return -100 if strength == "strong" else -60 if strength == "moderate" else -30
+        
+        return 0
+    
+    def _simple_trend_signal(self, data):
+        """Generate a simple trend signal based on moving averages."""
+        try:
+            # Check if we have SMAs
+            latest = data.iloc[-1]
+            has_sma = 'SMA_20' in latest and 'SMA_50' in latest
+            
+            if has_sma:
+                # Moving average crossover
+                sma_20 = latest['SMA_20']
+                sma_50 = latest['SMA_50']
+                close = latest['Close']
+                
+                if close > sma_20 > sma_50:
+                    return {"type": "buy", "strength": "strong", "reason": "Strong uptrend"}
+                elif close > sma_20 and sma_20 < sma_50:
+                    return {"type": "buy", "strength": "moderate", "reason": "Potential trend change to bullish"}
+                elif close < sma_20 < sma_50:
+                    return {"type": "sell", "strength": "strong", "reason": "Strong downtrend"}
+                elif close < sma_20 and sma_20 > sma_50:
+                    return {"type": "sell", "strength": "moderate", "reason": "Potential trend change to bearish"}
+                else:
+                    return {"type": "hold", "strength": "weak", "reason": "No clear trend"}
+            else:
+                # Simple price action
+                if len(data) >= 10:
+                    short_term = data['Close'].iloc[-1] > data['Close'].iloc[-5]
+                    if short_term:
+                        return {"type": "buy", "strength": "weak", "reason": "Recent price increase"}
+                    else:
+                        return {"type": "sell", "strength": "weak", "reason": "Recent price decrease"}
+                
+                return {"type": "hold", "strength": "weak", "reason": "Insufficient data"}
+        
+        except Exception as e:
+            print(f"Error in trend signal: {e}")
+            return {"type": "hold", "strength": "weak", "reason": "Error in analysis"}
+    
+    def _simple_momentum_signal(self, data):
+        """Generate a simple momentum signal based on RSI or price momentum."""
+        try:
+            latest = data.iloc[-1]
+            has_rsi = 'RSI' in latest
+            
+            if has_rsi:
+                rsi = latest['RSI']
+                if rsi < 30:
+                    return {"type": "buy", "strength": "strong", "reason": "Oversold (RSI)"}
+                elif rsi < 40:
+                    return {"type": "buy", "strength": "moderate", "reason": "Approaching oversold (RSI)"}
+                elif rsi > 70:
+                    return {"type": "sell", "strength": "strong", "reason": "Overbought (RSI)"}
+                elif rsi > 60:
+                    return {"type": "sell", "strength": "moderate", "reason": "Approaching overbought (RSI)"}
+                else:
+                    return {"type": "hold", "strength": "weak", "reason": "Neutral momentum (RSI)"}
+            else:
+                # Simple momentum based on price changes
+                if len(data) >= 10:
+                    returns = data['Close'].pct_change(5).iloc[-1] * 100
+                    if returns > 5:
+                        return {"type": "sell", "strength": "moderate", "reason": "Potential overbought"}
+                    elif returns < -5:
+                        return {"type": "buy", "strength": "moderate", "reason": "Potential oversold"}
+                
+                return {"type": "hold", "strength": "weak", "reason": "Neutral momentum"}
+        
+        except Exception as e:
+            print(f"Error in momentum signal: {e}")
+            return {"type": "hold", "strength": "weak", "reason": "Error in analysis"}
+    
+    def _calculate_buy_risk_management(self, data):
+        """Calculate risk management for buy signals."""
+        try:
+            latest_close = data['Close'].iloc[-1]
+            
+            # Simple stoploss at 3-5% below entry
+            stop_loss = latest_close * 0.95
+            
+            # Take profit at 1.5x-2x the risk
+            risk = latest_close - stop_loss
+            take_profit_1 = latest_close + risk * 1.5
+            take_profit_2 = latest_close + risk * 2.0
+            
+            return {
+                "entry": float(latest_close),
+                "stop_loss": float(stop_loss),
+                "take_profit_1": float(take_profit_1),
+                "take_profit_2": float(take_profit_2),
+                "risk_reward": 1.5
+            }
+        except Exception as e:
+            print(f"Error in risk management: {e}")
+            return None
+    
+    def _calculate_sell_risk_management(self, data):
+        """Calculate risk management for sell signals."""
+        try:
+            latest_close = data['Close'].iloc[-1]
+            
+            # Simple stoploss at 3-5% above entry
+            stop_loss = latest_close * 1.05
+            
+            # Take profit at 1.5x-2x the risk
+            risk = stop_loss - latest_close
+            take_profit_1 = latest_close - risk * 1.5
+            take_profit_2 = latest_close - risk * 2.0
+            
+            return {
+                "entry": float(latest_close),
+                "stop_loss": float(stop_loss),
+                "take_profit_1": float(take_profit_1),
+                "take_profit_2": float(take_profit_2),
+                "risk_reward": 1.5
+            }
+        except Exception as e:
+            print(f"Error in risk management: {e}")
+            return None
+    
+    def _generate_signal_text(self, overall, risk_management):
+        """Generate a human-readable signal text."""
+        try:
+            signal_type = overall["type"]
+            strength = overall["strength"]
+            
+            if signal_type == "buy":
+                text = f"{strength.capitalize()} buy signal detected"
+                if risk_management:
+                    entry = risk_management["entry"]
+                    stop = risk_management["stop_loss"]
+                    tp = risk_management["take_profit_1"]
+                    text += f". Entry: ${entry:.2f}, Stop: ${stop:.2f}, Target: ${tp:.2f}"
+                return text
+                
+            elif signal_type == "sell":
+                text = f"{strength.capitalize()} sell signal detected"
+                if risk_management:
+                    entry = risk_management["entry"]
+                    stop = risk_management["stop_loss"]
+                    tp = risk_management["take_profit_1"]
+                    text += f". Entry: ${entry:.2f}, Stop: ${stop:.2f}, Target: ${tp:.2f}"
+                return text
+                
+            else:  # hold
+                return "No clear signal. Recommend holding or staying out of the market."
+                
+        except Exception as e:
+            print(f"Error generating signal text: {e}")
+            return "Signal analysis error"
+
+# Helper function to generate trading signals
+def generate_trading_signals(data, risk_appetite="moderate"):
+    """Generate trading signals for the given data."""
+    generator = SignalGenerator(risk_appetite)
+    return generator.generate_signals(data)
+
+# ---------------------------
+# Enhanced News Sentiment Analysis
+# ---------------------------
+class EnhancedNewsSentimentAnalyzer:
+    """Enhanced news sentiment analysis using multiple NLP models."""
+    
+    def __init__(self):
+        """Initialize the sentiment analyzer."""
+        # Ensure NLTK resources are downloaded
+        try:
+            nltk.data.find('vader_lexicon')
+        except LookupError:
+            nltk.download('vader_lexicon')
+        
+        self.vader = SentimentIntensityAnalyzer()
+        
+        # Financial-specific words and their sentiment scores
+        self.financial_lexicon = {
+            'beat': 3.0, 'exceeded': 3.0, 'surpassed': 3.0, 'outperform': 2.5,
+            'upgrade': 2.0, 'upgraded': 2.0, 'buy': 1.5, 'bullish': 2.0,
+            'miss': -3.0, 'missed': -3.0, 'disappointing': -2.5, 'underperform': -2.5,
+            'downgrade': -2.0, 'downgraded': -2.0, 'sell': -1.5, 'bearish': -2.0,
+            'investigation': -1.5, 'lawsuit': -1.5, 'sec': -1.0, 'fine': -1.0,
+            'earnings': 0.0  # Neutral unless qualified
+        }
+        
+        # Add words to the VADER lexicon
+        for word, score in self.financial_lexicon.items():
+            self.vader.lexicon[word] = score
+    
+    def analyze_text(self, text):
+        """Analyze the sentiment of a piece of text."""
+        # Clean the text
+        text = re.sub(r'[^\w\s]', '', text)
+        
+        # Use multiple sentiment analysis techniques and average them
+        vader_scores = self.vader.polarity_scores(text)
+        textblob_analysis = TextBlob(text)
+        
+        # Combine scores (give more weight to VADER as it's finance-tuned)
+        compound_sentiment = vader_scores['compound'] * 0.7 + textblob_analysis.sentiment.polarity * 0.3
+        
+        # Convert to -1 to 1 scale
+        normalized_score = max(-1.0, min(1.0, compound_sentiment))
+        
+        # Determine sentiment category
+        if normalized_score > 0.25:
+            category = "positive"
+        elif normalized_score < -0.25:
+            category = "negative"
+        else:
+            category = "neutral"
+        
+        return {
+            "score": normalized_score,
+            "category": category,
+            "vader_score": vader_scores['compound'],
+            "textblob_score": textblob_analysis.sentiment.polarity
+        }
+    
+    def analyze_news_batch(self, news_items):
+        """Analyze a batch of news items and return detailed sentiment analysis."""
+        results = []
+        
+        for item in news_items:
+            # Combine title and summary for analysis
+            title = item.get('title', '')
+            summary = item.get('summary', '')
+            full_text = f"{title}. {summary}"
+            
+            # Get sentiment
+            sentiment = self.analyze_text(full_text)
+            
+            # Add additional context
+            result = {
+                "title": title,
+                "source": item.get('source', {}).get('name', 'Unknown'),
+                "published_at": item.get('publishedAt', None),
+                "sentiment_score": sentiment["score"],
+                "sentiment_category": sentiment["category"],
+                "url": item.get('url', '')
+            }
+            
+            results.append(result)
+        
+        return results
+    
+    def get_overall_sentiment(self, analyzed_items):
+        """Calculate overall sentiment from a list of analyzed news items."""
+        if not analyzed_items:
+            return {"score": 0, "category": "neutral", "confidence": 0}
+        
+        # Weight more recent news higher and consider source credibility
+        total_score = 0
+        weights = 0
+        current_time = datetime.now()
+        
+        for item in analyzed_items:
+            # Base weight
+            weight = 1.0
+            
+            # Adjust weight based on recency if publish date is available
+            if item.get('published_at'):
+                try:
+                    pub_date = datetime.fromisoformat(item['published_at'].replace('Z', '+00:00'))
+                    hours_ago = (current_time - pub_date).total_seconds() / 3600
+                    
+                    # Exponential decay - news from 24h ago has half the weight
+                    recency_factor = 2 ** (-hours_ago / 24)
+                    weight *= recency_factor
+                except (ValueError, TypeError):
+                    pass
+            
+            # Adjust weight based on source credibility
+            if item.get('source'):
+                credible_sources = ['Bloomberg', 'Reuters', 'Wall Street Journal', 'Financial Times', 'CNBC']
+                if any(src.lower() in item['source'].lower() for src in credible_sources):
+                    weight *= 1.5
+            
+            # Add weighted score
+            total_score += item['sentiment_score'] * weight
+            weights += weight
+        
+        if weights > 0:
+            avg_score = total_score / weights
+        else:
+            avg_score = 0
+        
+        # Determine category and confidence
+        if avg_score > 0.25:
+            category = "positive"
+        elif avg_score < -0.25:
+            category = "negative"
+        else:
+            category = "neutral"
+        
+        # Calculate confidence based on agreement between sources
+        scores = [item['sentiment_score'] for item in analyzed_items]
+        if len(scores) > 1:
+            # Standard deviation as a measure of disagreement
+            std_dev = pd.Series(scores).std()
+            
+            # Higher standard deviation = lower confidence
+            confidence = max(0, min(100, 100 * (1 - std_dev)))
+        else:
+            confidence = 50  # Default confidence for single source
+        
+        return {
+            "score": avg_score,
+            "category": category,
+            "confidence": confidence,
+            "sources_count": len(analyzed_items)
+        }
+
+def analyze_news_sentiment(symbol):
+    """Analyze news sentiment for a given symbol with advanced analysis."""
     try:
-        # Get the most recent values of key indicators
-        for indicator in ['RSI', 'MACD', 'ATR', 'SMA_20', 'SMA_50', 'BB_Upper', 'BB_Lower']:
-            if indicator in data_with_indicators.columns:
-                indicators[indicator] = float(data_with_indicators[indicator].iloc[-1])
+        # Fetch news
+        news = fetch_news(symbol, max_items=5)
+        if not news:
+            return {"score": 0, "category": "neutral", "confidence": 0}
         
-        # Add derived indicators
-        if 'Close' in data_with_indicators.columns:
-            last_close = data_with_indicators['Close'].iloc[-1]
-            
-            # Trend determination
-            if 'SMA_20' in indicators and 'SMA_50' in indicators:
-                indicators['trend'] = 'bullish' if indicators['SMA_20'] > indicators['SMA_50'] else 'bearish'
-            
-            # Bollinger Band position
-            if 'BB_Upper' in indicators and 'BB_Lower' in indicators:
-                bb_width = indicators['BB_Upper'] - indicators['BB_Lower']
-                if bb_width > 0:
-                    bb_position = (last_close - indicators['BB_Lower']) / bb_width
-                    indicators['BB_position'] = float(bb_position)
+        # Create analyzer instance
+        analyzer = EnhancedNewsSentimentAnalyzer()
         
-        # Add extended hours indicators if available
-        for eh_indicator in ['pre_market_change', 'after_hours_change']:
-            if eh_indicator in data_with_indicators.columns:
-                # Get the most recent value that's not zero
-                values = data_with_indicators[eh_indicator].values
-                non_zero_values = values[values != 0]
-                if len(non_zero_values) > 0:
-                    indicators[eh_indicator] = float(non_zero_values[-1])
+        # Analyze all news items
+        analyzed_news = analyzer.analyze_news_batch(news)
         
-        return indicators
+        # Get overall sentiment
+        overall_sentiment = analyzer.get_overall_sentiment(analyzed_news)
+        
+        # Add detailed items for reference
+        overall_sentiment["items"] = analyzed_news
+        
+        return overall_sentiment
     except Exception as e:
-        print(f"Error extracting indicators: {e}")
-        return {}
+        print(f"Error analyzing news sentiment: {e}")
+        return {"score": 0, "category": "neutral", "confidence": 0}
     
 # ---------------------------
 # Flask Routes
