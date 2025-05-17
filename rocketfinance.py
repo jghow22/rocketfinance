@@ -99,12 +99,16 @@ def fetch_data(symbol, timeframe, include_extended_hours=True):
     if timeframe in intraday_options:
         base_interval = "60min" if timeframe in ["2h", "4h"] else timeframe
         function = "TIME_SERIES_INTRADAY"
+        
+        # Always use full output size for more historical data
+        outputsize = "full"
+        
         params = {
             "function": function,
             "symbol": symbol,
             "apikey": api_key,
             "interval": base_interval,
-            "outputsize": "compact",
+            "outputsize": outputsize,
             "datatype": "json",
             "extended_hours": "true" if include_extended_hours else "false"
         }
@@ -139,6 +143,19 @@ def fetch_data(symbol, timeframe, include_extended_hours=True):
             df["Volume"] = df["Volume"].astype(float)
         if df.index.tz is None:
             df.index = df.index.tz_localize("UTC")
+        
+        # For timeframe "5min", limit to most recent 250 data points (about 2 trading days)
+        # For "30min", limit to 250 data points (about 1 week)
+        # For "2h" and "4h", limit to 200 data points (about 2-4 weeks)
+        if timeframe == "5min":
+            df = df.iloc[-min(250, len(df)):]
+        elif timeframe == "30min":
+            df = df.iloc[-min(250, len(df)):]
+        elif timeframe == "2h":
+            df = df.iloc[-min(200, len(df)):]
+        elif timeframe == "4h":
+            df = df.iloc[-min(200, len(df)):]
+        
         if timeframe in ["2h", "4h"]:
             freq = "2H" if timeframe == "2h" else "4H"
             # Resample with proper OHLC aggregation
@@ -152,16 +169,24 @@ def fetch_data(symbol, timeframe, include_extended_hours=True):
                 agg_dict["Volume"] = 'sum'
             df = df.resample(freq).agg(agg_dict).dropna()
             print(f"Resampled intraday data to {freq} frequency, resulting in {len(df)} rows.")
+        
         # Mark extended hours data if enabled
         if include_extended_hours:
             df = mark_extended_hours(df)
+        
+        # Add symbol as name
+        df.name = symbol.upper()
+        
         # Store in cache
         cache[cache_key] = (datetime.now(), df)
         return df
     else:
         # Daily data: use TIME_SERIES_DAILY and retain OHLC.
         function = "TIME_SERIES_DAILY"
-        outputsize = "compact" if timeframe != "1yr" else "full"
+        
+        # Always use full output size to get more historical data
+        outputsize = "full"
+        
         params = {
             "function": function,
             "symbol": symbol,
@@ -198,24 +223,38 @@ def fetch_data(symbol, timeframe, include_extended_hours=True):
                 df[col] = df[col].astype(float)
         if "Volume" in df.columns:
             df["Volume"] = df["Volume"].astype(float)
+        
+        # Get more historical data for each timeframe
         now = datetime.now()
         if timeframe == "1day":
-            start_date = now - timedelta(days=7)
+            # Use last 60 days for daily charts (about 3 months of trading days)
+            start_date = now - timedelta(days=60)
         elif timeframe == "7day":
-            start_date = now - timedelta(days=15)
+            # Use last 180 days for weekly charts (about 6 months)
+            start_date = now - timedelta(days=180)
         elif timeframe == "1mo":
-            start_date = now - timedelta(days=45)
+            # Use last 365 days for monthly charts (1 year)
+            start_date = now - timedelta(days=365)
         elif timeframe == "3mo":
-            start_date = now - timedelta(days=100)
+            # Use last 730 days for quarterly charts (2 years)
+            start_date = now - timedelta(days=730)
         elif timeframe == "1yr":
-            start_date = now - timedelta(days=400)
+            # Use last 1825 days for yearly charts (5 years)
+            start_date = now - timedelta(days=1825)
         else:
-            start_date = now - timedelta(days=30)
+            # Default to 90 days
+            start_date = now - timedelta(days=90)
+        
         df = df[df.index >= start_date]
         if df.empty:
             raise ValueError(f"No data found for symbol: {symbol} in the specified timeframe")
+        
         if df.index.tz is None:
             df.index = df.index.tz_localize("UTC")
+        
+        # Add symbol as name
+        df.name = symbol.upper()
+        
         # Daily data doesn't include extended hours, so no session marking
         # Store in cache
         cache[cache_key] = (datetime.now(), df)
@@ -542,7 +581,7 @@ def extract_key_indicators(data):
                 else:
                     result['BB_signal'] = 'neutral'
         
-        # Volatility (ATR)
+                # Volatility (ATR)
         if 'ATR' in latest and not pd.isna(latest['ATR']):
             result['ATR'] = float(latest['ATR'])
             # Express ATR as percentage of price
@@ -568,91 +607,6 @@ def extract_key_indicators(data):
     except Exception as e:
         print(f"Error extracting key indicators: {e}")
         return None
-
-# ---------------------------
-# Market Regime Detection
-# ---------------------------
-def detect_market_regime(data, window=20):
-    """
-    Detect the current market regime (trending, mean-reverting, volatile).
-    Returns: 'trending_up', 'trending_down', 'mean_reverting', 'volatile', or 'unknown'
-    """
-    # Adjust window if data is too short
-    window = min(window, len(data) // 2)
-    if window < 5:
-        return 'unknown'  # Not enough data
-
-    df = data.tail(window*2).copy()
-
-    # Calculate key metrics
-    df['returns'] = df['Close'].pct_change()
-
-    # Calculate autocorrelation and trend
-    if len(df) > 2:
-        autocorr = df['returns'].dropna().autocorr(lag=1)
-        trend = (df['Close'].iloc[-1] - df['Close'].iloc[0]) / df['Close'].iloc[0]
-
-    # Calculate volatility
-    if len(df['returns'].dropna()) > 0:
-        volatility = df['returns'].std() * np.sqrt(252)  # Annualized volatility
-    else:
-        volatility = 0
-
-    # Calculate ADX (Average Directional Index) to measure trend strength
-    df = calculate_adx(df)
-    adx_value = df['ADX'].iloc[-1] if 'ADX' in df.columns and not pd.isna(df['ADX'].iloc[-1]) else 15
-
-        # Determine regime
-    if adx_value > 25:  # Strong trend
-        if trend > 0:
-            return 'trending_up'
-        else:
-            return 'trending_down'
-    elif autocorr < -0.2:  # Negative autocorrelation suggests mean reversion
-        return 'mean_reverting'
-    elif volatility > 0.3:  # High volatility
-        return 'volatile'
-    else:
-        return 'unknown'
-
-def calculate_adx(df, period=14):
-    """Calculate Average Directional Index."""
-    # Adjust period if data is too short
-    period = min(period, len(df) // 3)
-    if period < 2:
-        df['ADX'] = pd.Series(np.nan, index=df.index)
-        return df
-
-    # Calculate +DM, -DM, +DI, -DI, and ADX
-    try:
-        df['tr1'] = abs(df['High'] - df['Low'])
-        df['tr2'] = abs(df['High'] - df['Close'].shift(1))
-        df['tr3'] = abs(df['Low'] - df['Close'].shift(1))
-        df['TR'] = df[['tr1', 'tr2', 'tr3']].max(axis=1)
-        df['+DM'] = np.where((df['High'] - df['High'].shift(1)) > (df['Low'].shift(1) - df['Low']),
-                            np.maximum(df['High'] - df['High'].shift(1), 0), 0)
-        df['-DM'] = np.where((df['Low'].shift(1) - df['Low']) > (df['High'] - df['High'].shift(1)),
-                            np.maximum(df['Low'].shift(1) - df['Low'], 0), 0)
-        df['TR14'] = df['TR'].rolling(window=period).sum()
-        df['+DM14'] = df['+DM'].rolling(window=period).sum()
-        df['-DM14'] = df['-DM'].rolling(window=period).sum()
-
-        # Handle division by zero
-        df['TR14'] = df['TR14'].replace(0, np.nan)
-        df['+DI14'] = 100 * df['+DM14'] / df['TR14']
-        df['-DI14'] = 100 * df['-DM14'] / df['TR14']
-
-        # Handle division by zero and NaN values
-        sum_di = df['+DI14'] + df['-DI14']
-        sum_di = sum_di.replace(0, np.nan)
-        df['DX'] = 100 * abs(df['+DI14'] - df['-DI14']) / sum_di
-        df['DX'] = df['DX'].fillna(0)  # Replace NaN with 0
-        df['ADX'] = df['DX'].rolling(window=period).mean()
-        return df
-    except Exception as e:
-        print(f"Error calculating ADX: {e}")
-        df['ADX'] = np.nan
-        return df
 
 # ---------------------------
 # Chart Generation Function (New function)
@@ -737,9 +691,9 @@ def generate_chart(data, symbol, forecast=None, timeframe="1day"):
             
             # Shade the forecast region
             ax.fill_between(forecast_dates, 
-                          [min(data['Close'].min(), min(forecast)) * 0.98] * len(forecast_dates), 
-                          [max(data['Close'].max(), max(forecast)) * 1.02] * len(forecast_dates), 
-                          color='#ffcc00', alpha=0.05)
+                           [min(data['Close'].min(), min(forecast)) * 0.98] * len(forecast_dates), 
+                           [max(data['Close'].max(), max(forecast)) * 1.02] * len(forecast_dates), 
+                           color='#ffcc00', alpha=0.05)
         
         # Add title and labels
         timeframe_display = timeframe
@@ -1284,7 +1238,6 @@ def improved_ensemble_forecast(data, periods=5, timeframe="1day"):
     except Exception as e:
         print(f"Error in improved ensemble forecast: {e}")
         return enhanced_forecast(data, periods, timeframe)
-
 def regime_aware_forecast(data, periods=5, timeframe="1day"):
     """
     Generate forecasts that adapt to the current market regime.
@@ -1305,7 +1258,7 @@ def regime_aware_forecast(data, periods=5, timeframe="1day"):
                 except:
                     base_forecast = linear_regression_forecast(data, periods, degree=1)
             
-                        # Enhance trend slightly
+            # Enhance trend slightly
             enhanced_trend = []
             last_close = data['Close'].iloc[-1]
             trend_rate = (base_forecast[-1] - base_forecast[0]) / (periods * last_close)
@@ -1751,8 +1704,8 @@ def get_chart_data(data, forecast, timeframe):
     # Generate forecast OHLC data
     forecast_ohlc = generate_forecast_ohlc(data, forecast)
     
-    # Get symbol from DataFrame if possible
-    symbol = data.name if hasattr(data, 'name') and data.name else ""
+    # Get symbol from DataFrame name attribute
+    symbol = data.name if hasattr(data, 'name') else ""
     
     result = {
         "historicalDates": historical_dates,
@@ -2047,7 +2000,7 @@ class EnhancedNewsSentimentAnalyzer:
             'beat': 3.0, 'exceeded': 3.0, 'surpassed': 3.0, 'outperform': 2.5,
             'upgrade': 2.0, 'upgraded': 2.0, 'buy': 1.5, 'bullish': 2.0,
             'miss': -3.0, 'missed': -3.0, 'disappointing': -2.5, 'underperform': -2.5,
-                        'downgrade': -2.0, 'downgraded': -2.0, 'sell': -1.5, 'bearish': -2.0,
+            'downgrade': -2.0, 'downgraded': -2.0, 'sell': -1.5, 'bearish': -2.0,
             'investigation': -1.5, 'lawsuit': -1.5, 'sec': -1.0, 'fine': -1.0,
             'earnings': 0.0  # Neutral unless qualified
         }
