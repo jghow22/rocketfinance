@@ -602,7 +602,7 @@ def detect_market_regime(data, window=20):
     df = calculate_adx(df)
     adx_value = df['ADX'].iloc[-1] if 'ADX' in df.columns and not pd.isna(df['ADX'].iloc[-1]) else 15
 
-    # Determine regime
+        # Determine regime
     if adx_value > 25:  # Strong trend
         if trend > 0:
             return 'trending_up'
@@ -685,7 +685,7 @@ def generate_chart(data, symbol, forecast=None, timeframe="1day"):
         ax.yaxis.label.set_color('#cccccc')
         ax.xaxis.label.set_color('#cccccc')
         ax.grid(alpha=0.15)
-
+        
         # Format dates based on timeframe
         if timeframe in ["5min", "30min", "2h", "4h"]:
             date_format = '%H:%M'
@@ -1305,7 +1305,7 @@ def regime_aware_forecast(data, periods=5, timeframe="1day"):
                 except:
                     base_forecast = linear_regression_forecast(data, periods, degree=1)
             
-            # Enhance trend slightly
+                        # Enhance trend slightly
             enhanced_trend = []
             last_close = data['Close'].iloc[-1]
             trend_rate = (base_forecast[-1] - base_forecast[0]) / (periods * last_close)
@@ -1400,7 +1400,7 @@ def market_aware_forecast(data, periods=5, timeframe="1day", symbol="AAPL"):
                 after_hours_data = data[data['session'] == 'after-hours']
                 
                 if not pre_market_data.empty and not regular_data.empty:
-                                        # Calculate pre-market sentiment
+                    # Calculate pre-market sentiment
                     pre_market_change = pre_market_data['Close'].pct_change().mean() * 100
                     
                     # Incorporate pre-market sentiment into forecast
@@ -1702,6 +1702,10 @@ def get_chart_data(data, forecast, timeframe):
     Returns:
         dict: Chart data for frontend rendering
     """
+    # Ensure forecast is a list of floats
+    if forecast is not None:
+        forecast = [float(f) for f in forecast]
+        
     historical_dates = data.index.strftime("%Y-%m-%dT%H:%M:%SZ").tolist()
     historical_values = data["Close"].tolist()
     
@@ -1721,6 +1725,7 @@ def get_chart_data(data, forecast, timeframe):
                 ohlc_point["session"] = row["session"]
             historical_ohlc.append(ohlc_point)
     
+    # Generate forecast dates with proper ISO format
     last_date = data.index[-1]
     if timeframe.endswith("min"):
         minutes = int(timeframe.replace("min", ""))
@@ -1746,12 +1751,16 @@ def get_chart_data(data, forecast, timeframe):
     # Generate forecast OHLC data
     forecast_ohlc = generate_forecast_ohlc(data, forecast)
     
+    # Get symbol from DataFrame if possible
+    symbol = data.name if hasattr(data, 'name') and data.name else ""
+    
     result = {
         "historicalDates": historical_dates,
         "historicalValues": historical_values,
         "forecastDates": forecast_dates,
         "forecastValues": forecast,
         "timeframe": timeframe,
+        "symbol": symbol,
         "includesExtendedHours": 'session' in data.columns
     }
     
@@ -2038,7 +2047,7 @@ class EnhancedNewsSentimentAnalyzer:
             'beat': 3.0, 'exceeded': 3.0, 'surpassed': 3.0, 'outperform': 2.5,
             'upgrade': 2.0, 'upgraded': 2.0, 'buy': 1.5, 'bullish': 2.0,
             'miss': -3.0, 'missed': -3.0, 'disappointing': -2.5, 'underperform': -2.5,
-            'downgrade': -2.0, 'downgraded': -2.0, 'sell': -1.5, 'bearish': -2.0,
+                        'downgrade': -2.0, 'downgraded': -2.0, 'sell': -1.5, 'bearish': -2.0,
             'investigation': -1.5, 'lawsuit': -1.5, 'sec': -1.0, 'fine': -1.0,
             'earnings': 0.0  # Neutral unless qualified
         }
@@ -2152,7 +2161,7 @@ class EnhancedNewsSentimentAnalyzer:
         else:
             category = "neutral"
         
-                # Calculate confidence based on agreement between sources
+        # Calculate confidence based on agreement between sources
         scores = [item['sentiment_score'] for item in analyzed_items]
         if len(scores) > 1:
             # Standard deviation as a measure of disagreement
