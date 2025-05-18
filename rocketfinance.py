@@ -685,21 +685,25 @@ def generate_chart(data, symbol, forecast=None, timeframe="1day"):
             forecast_dates = pd.date_range(start=data.index[-1] + timedelta(days=1), periods=len(forecast), freq='B')
 
         # Plot forecast line
-        ax.plot(forecast_dates, forecast, color='#ffcc00', linewidth=2, linestyle='--', marker='o', label='Forecast')
+        ax.plot(forecast_dates, forecast, color='#FFD700', linewidth=2, linestyle='--', marker='o', label='Forecast')
 
         # Shade the forecast region
         ax.fill_between(forecast_dates, 
                         [min(data['Close'].min(), min(forecast)) * 0.98] * len(forecast_dates), 
                         [max(data['Close'].max(), max(forecast)) * 1.02] * len(forecast_dates), 
-                        color='#ffcc00', alpha=0.05)
+                        color='#FFD700', alpha=0.05)
 
-                # Add title and labels
+        # Add title and labels
         timeframe_display = timeframe
         if timeframe == "1day": timeframe_display = "Daily"
         elif timeframe == "7day": timeframe_display = "Weekly"
         elif timeframe == "1mo": timeframe_display = "Monthly"
         elif timeframe == "3mo": timeframe_display = "Quarterly"
         elif timeframe == "1yr": timeframe_display = "Yearly"
+        elif timeframe == "5min": timeframe_display = "5 Minute"
+        elif timeframe == "30min": timeframe_display = "30 Minute"
+        elif timeframe == "2h": timeframe_display = "2 Hour"
+        elif timeframe == "4h": timeframe_display = "4 Hour"
 
         plt.title(f"{symbol} {timeframe_display} Chart", color='white', fontsize=16)
         plt.xlabel('Date', color='#cccccc')
@@ -832,7 +836,7 @@ def mean_reversion_forecast(data, periods=5):
         return [data["Close"].iloc[-1]] * periods
 
 # ---------------------------
-# New: Market Regime Detection Function
+# Market Regime Detection Function
 # ---------------------------
 def detect_market_regime(data):
     """
@@ -1191,6 +1195,40 @@ def improved_ensemble_forecast(data, periods=5, timeframe="1day"):
         return enhanced_forecast(data, periods, timeframe)
     
     try:
+        # For 4h timeframe, use a simpler forecasting method to ensure better visualization
+        if timeframe == "4h":
+            # Use polynomial regression with some volatility adjustment
+            base_forecast = linear_regression_forecast(data, periods, degree=2)
+            # Get the last few days' volatility
+            recent_volatility = data['Close'].pct_change().std() * 2.0
+            
+            # Adjust the forecast with some reasonable volatility
+            last_price = data['Close'].iloc[-1]
+            volatility_adjusted = []
+            for i, price in enumerate(base_forecast):
+                # Keep first point close to last actual price
+                if i == 0:
+                    deviation = np.random.normal(0, recent_volatility * 0.5) * last_price
+                    volatility_adjusted.append(float(last_price + deviation))
+                else:
+                    # Ensure we don't get extreme values
+                    max_deviation = last_price * recent_volatility * 0.1 * (i + 1)
+                    deviation = np.random.normal(0, max_deviation)
+                    # Ensure we follow the overall trend
+                    trend_component = price - base_forecast[i-1]
+                    new_price = volatility_adjusted[i-1] + trend_component + deviation
+                    # Limit the deviation to a reasonable range
+                    max_change = last_price * 0.05 * (i + 1)
+                    if abs(new_price - last_price) > max_change:
+                        # Limit the change
+                        direction = 1 if new_price > last_price else -1
+                        new_price = last_price + direction * max_change
+                    
+                    volatility_adjusted.append(float(new_price))
+            
+            print(f"4h special forecast: {volatility_adjusted}")
+            return volatility_adjusted
+            
         # Check if we have session data (extended hours)
         has_extended_hours = 'session' in data.columns
         
@@ -1305,8 +1343,15 @@ def improved_ensemble_forecast(data, periods=5, timeframe="1day"):
         
         print(f"Final ensemble forecast: {ensemble_forecast}")
         
+        # Smooth the forecast to avoid wild swings
+        smoothed_forecast = [ensemble_forecast[0]]
+        for i in range(1, len(ensemble_forecast)):
+            # Use exponential smoothing
+            smoothed_val = 0.7 * ensemble_forecast[i] + 0.3 * smoothed_forecast[i-1]
+            smoothed_forecast.append(smoothed_val)
+        
         # Adjust for volatility - now session-aware if extended hours data is available
-        return adjust_forecast_volatility(ensemble_forecast, data)
+        return adjust_forecast_volatility(smoothed_forecast, data)
     except Exception as e:
         print(f"Error in improved ensemble forecast: {e}")
         # Provide a safe fallback forecast
@@ -1740,6 +1785,18 @@ def get_chart_data(data, forecast, timeframe):
     historical_dates = data.index.strftime("%Y-%m-%dT%H:%M:%SZ").tolist()
     historical_values = [float(val) for val in data["Close"].tolist()]
     
+    # Add timeframe display name for better frontend formatting
+    timeframe_display = timeframe
+    if timeframe == "1day": timeframe_display = "Daily"
+    elif timeframe == "7day": timeframe_display = "Weekly"
+    elif timeframe == "1mo": timeframe_display = "Monthly"
+    elif timeframe == "3mo": timeframe_display = "Quarterly"
+    elif timeframe == "1yr": timeframe_display = "Yearly"
+    elif timeframe == "5min": timeframe_display = "5 Minute"
+    elif timeframe == "30min": timeframe_display = "30 Minute"
+    elif timeframe == "2h": timeframe_display = "2 Hour"
+    elif timeframe == "4h": timeframe_display = "4 Hour"
+    
     # Debug log the values to verify data
     print(f"Sample historical values: {historical_values[:5]}")
     print(f"Sample forecast values: {forecast}")
@@ -1789,14 +1846,19 @@ def get_chart_data(data, forecast, timeframe):
     # Get symbol from DataFrame name attribute
     symbol = data.name if hasattr(data, 'name') else ""
     
+    # Determine if this is intraday data
+    is_intraday = timeframe.endswith('min') or timeframe.endswith('h')
+    
     result = {
         "historicalDates": historical_dates,
         "historicalValues": historical_values,
         "forecastDates": forecast_dates,
         "forecastValues": forecast,
         "timeframe": timeframe,
+        "timeframeDisplay": timeframe_display,
         "symbol": symbol,
-        "includesExtendedHours": 'session' in data.columns
+        "includesExtendedHours": 'session' in data.columns,
+        "isIntraday": is_intraday
     }
     
     # Include OHLC data if available
@@ -2307,19 +2369,53 @@ def process():
             chart_data = {
                 "symbol": symbol,
                 "timeframe": timeframe,
+                "timeframeDisplay": timeframe,
                 "historicalDates": data.index.strftime("%Y-%m-%dT%H:%M:%SZ").tolist(),
                 "historicalValues": [float(x) for x in data["Close"].tolist()],
                 "forecastDates": [],
-                "forecastValues": []
+                "forecastValues": [],
+                "isIntraday": timeframe.endswith('min') or timeframe.endswith('h')
             }
         
         # Add flag for extended hours
         has_extended_hours = 'session' in data.columns
         
+        # Add styling information for the chart
+        chart_styling = {
+            "forecast": {
+                "lineColor": "#FFD700",  # Gold color for forecast
+                "lineWidth": 3,
+                "markerColor": "#FFD700",
+                "markerSize": 8
+            },
+            "historical": {
+                "regularHours": {
+                    "color": "#4da6ff"  # Blue
+                },
+                "preMarket": {
+                    "color": "#90caf9"  # Light blue
+                },
+                "afterHours": {
+                    "color": "#ffb74d"  # Orange
+                }
+            },
+            "candlestick": {
+                "increasing": {
+                    "color": "#26a69a",  # Green
+                    "lineColor": "#26a69a"
+                },
+                "decreasing": {
+                    "color": "#ef5350",  # Red
+                    "lineColor": "#ef5350"
+                }
+            }
+        }
+        
         # Start with a basic response that will work even if other parts timeout
         response = {
             "forecast": forecast,
             "chartData": {"symbol": symbol.upper(), **chart_data},
+            "chartStyling": chart_styling,
             "news": [{"title": "Loading news...", "source": {"name": "Trading System"}, "summary": "News will be available on next refresh."}],
             "openai_refined_prediction": f"Analysis for {symbol}: Based on technical analysis, the forecast suggests a trend from ${data['Close'].iloc[-1]:.2f} to ${forecast[-1]:.2f} over the {timeframe} timeframe.",
             "includesExtendedHours": has_extended_hours
