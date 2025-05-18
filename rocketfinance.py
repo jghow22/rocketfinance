@@ -99,10 +99,8 @@ def fetch_data(symbol, timeframe, include_extended_hours=True):
     if timeframe in intraday_options:
         base_interval = "60min" if timeframe in ["2h", "4h"] else timeframe
         function = "TIME_SERIES_INTRADAY"
-        
         # Always use full output size for more historical data
         outputsize = "full"
-        
         params = {
             "function": function,
             "symbol": symbol,
@@ -114,17 +112,21 @@ def fetch_data(symbol, timeframe, include_extended_hours=True):
         }
         expected_key = f"Time Series ({base_interval})"
         print(f"Fetching intraday data for {symbol} with interval {base_interval}, extended hours: {include_extended_hours}")
+
         response = requests.get("https://www.alphavantage.co/query", params=params)
         if response.status_code != 200:
             raise ValueError(f"Alpha Vantage API request failed with status code {response.status_code}")
+
         data_json = response.json()
         if expected_key not in data_json:
             print("Alpha Vantage API response:", data_json)
             raise ValueError(f"Alpha Vantage API response missing expected key: {expected_key}")
+
         ts_data = data_json[expected_key]
         df = pd.DataFrame.from_dict(ts_data, orient="index")
         df.index = pd.to_datetime(df.index)
         df.sort_index(inplace=True)
+
         # Rename columns to maintain consistent OHLC structure
         rename_dict = {
             "1. open": "Open",
@@ -136,14 +138,16 @@ def fetch_data(symbol, timeframe, include_extended_hours=True):
         if "5. volume" in df.columns:
             rename_dict["5. volume"] = "Volume"
         df = df.rename(columns=rename_dict)
+
         for col in ["Open", "High", "Low", "Close"]:
             if col in df.columns:
                 df[col] = df[col].astype(float)
         if "Volume" in df.columns:
             df["Volume"] = df["Volume"].astype(float)
+
         if df.index.tz is None:
             df.index = df.index.tz_localize("UTC")
-        
+
         # For timeframe "5min", limit to most recent 250 data points (about 2 trading days)
         # For "30min", limit to 250 data points (about 1 week)
         # For "2h" and "4h", limit to 200 data points (about 2-4 weeks)
@@ -155,7 +159,7 @@ def fetch_data(symbol, timeframe, include_extended_hours=True):
             df = df.iloc[-min(200, len(df)):]
         elif timeframe == "4h":
             df = df.iloc[-min(200, len(df)):]
-        
+
         if timeframe in ["2h", "4h"]:
             freq = "2H" if timeframe == "2h" else "4H"
             # Resample with proper OHLC aggregation
@@ -169,24 +173,22 @@ def fetch_data(symbol, timeframe, include_extended_hours=True):
                 agg_dict["Volume"] = 'sum'
             df = df.resample(freq).agg(agg_dict).dropna()
             print(f"Resampled intraday data to {freq} frequency, resulting in {len(df)} rows.")
-        
+
         # Mark extended hours data if enabled
         if include_extended_hours:
             df = mark_extended_hours(df)
-        
+
         # Add symbol as name
         df.name = symbol.upper()
-        
+
         # Store in cache
         cache[cache_key] = (datetime.now(), df)
         return df
     else:
         # Daily data: use TIME_SERIES_DAILY and retain OHLC.
         function = "TIME_SERIES_DAILY"
-        
         # Always use full output size to get more historical data
         outputsize = "full"
-        
         params = {
             "function": function,
             "symbol": symbol,
@@ -196,17 +198,21 @@ def fetch_data(symbol, timeframe, include_extended_hours=True):
         }
         expected_key = "Time Series (Daily)"
         print(f"Fetching daily data for {symbol} with outputsize {outputsize}")
+
         response = requests.get("https://www.alphavantage.co/query", params=params)
         if response.status_code != 200:
             raise ValueError(f"Alpha Vantage API request failed with status code {response.status_code}")
+
         data_json = response.json()
         if expected_key not in data_json:
             print("Alpha Vantage API response:", data_json)
             raise ValueError("Alpha Vantage API response missing 'Time Series (Daily)'")
+
         ts_data = data_json[expected_key]
         df = pd.DataFrame.from_dict(ts_data, orient="index")
         df.index = pd.to_datetime(df.index)
         df.sort_index(inplace=True)
+
         # Rename columns to maintain consistent OHLC structure
         rename_dict = {
             "1. open": "Open",
@@ -218,12 +224,13 @@ def fetch_data(symbol, timeframe, include_extended_hours=True):
         if "5. volume" in df.columns:
             rename_dict["5. volume"] = "Volume"
         df = df.rename(columns=rename_dict)
+
         for col in ["Open", "High", "Low", "Close"]:
             if col in df.columns:
                 df[col] = df[col].astype(float)
         if "Volume" in df.columns:
             df["Volume"] = df["Volume"].astype(float)
-        
+
         # Get more historical data for each timeframe
         now = datetime.now()
         if timeframe == "1day":
@@ -244,18 +251,19 @@ def fetch_data(symbol, timeframe, include_extended_hours=True):
         else:
             # Default to 90 days
             start_date = now - timedelta(days=90)
-        
+
         df = df[df.index >= start_date]
         if df.empty:
             raise ValueError(f"No data found for symbol: {symbol} in the specified timeframe")
-        
+
         if df.index.tz is None:
             df.index = df.index.tz_localize("UTC")
-        
+
         # Add symbol as name
         df.name = symbol.upper()
-        
+
         # Daily data doesn't include extended hours, so no session marking
+
         # Store in cache
         cache[cache_key] = (datetime.now(), df)
         return df
@@ -270,9 +278,11 @@ def mark_extended_hours(data):
     """
     df = data.copy()
     df['session'] = 'regular'
+
     # Convert index to datetime if it's not already
     if not isinstance(df.index, pd.DatetimeIndex):
         df.index = pd.to_datetime(df.index)
+
     # Ensure timezone info is present
     if df.index.tz is None:
         df.index = df.index.tz_localize('America/New_York')
@@ -281,6 +291,7 @@ def mark_extended_hours(data):
 
     # Extract time info
     times = df.index.time
+
     # Define market hours
     pre_market_start = pd.to_datetime('04:00:00').time()
     market_open = pd.to_datetime('09:30:00').time()
@@ -355,6 +366,7 @@ def fetch_news(symbol, max_items=5):
         # Set timeout to avoid blocking
         timeout = 5  # seconds
         response = requests.get(url, params=params, timeout=timeout)
+
         if response.status_code != 200:
             print(f"NewsAPI error: Status {response.status_code}")
             return get_placeholder_news(symbol)
@@ -385,7 +397,6 @@ def fetch_news(symbol, max_items=5):
             })
 
         return news
-
     except Exception as e:
         print(f"Error fetching news: {e}")
         return get_placeholder_news(symbol)
@@ -475,6 +486,7 @@ def calculate_atr(data, period=14):
 
     df['TR'] = df[['H-L', 'H-PC', 'L-PC']].max(axis=1)
     df['ATR'] = df['TR'].rolling(window=min(period, len(df))).mean()
+
     return df['ATR']
 
 def calculate_obv(data):
@@ -490,6 +502,7 @@ def calculate_obv(data):
             obv.append(obv[-1] - data['Volume'].iloc[i])
         else:
             obv.append(obv[-1])
+
     return pd.Series(obv, index=data.index)
 
 # ---------------------------
@@ -498,10 +511,8 @@ def calculate_obv(data):
 def extract_key_indicators(data):
     """
     Extract key technical indicators for display in the frontend.
-    
     Args:
         data (pd.DataFrame): DataFrame with calculated indicators
-        
     Returns:
         dict: Dictionary of key indicators with their latest values
     """
@@ -509,17 +520,16 @@ def extract_key_indicators(data):
         # Ensure we have the latest data point
         if len(data) == 0:
             return None
-            
+
         latest = data.iloc[-1]
         result = {}
-        
+
         # Basic price metrics
         close_price = latest['Close']
-        
+
         # Extract key indicators if they exist
         if 'RSI' in latest and not pd.isna(latest['RSI']):
             result['RSI'] = float(latest['RSI'])
-            
             # Add RSI interpretation
             if latest['RSI'] < 30:
                 result['RSI_signal'] = 'oversold'
@@ -527,26 +537,24 @@ def extract_key_indicators(data):
                 result['RSI_signal'] = 'overbought'
             else:
                 result['RSI_signal'] = 'neutral'
-        
+
         # MACD
         if 'MACD' in latest and 'MACD_Signal' in latest:
             if not pd.isna(latest['MACD']) and not pd.isna(latest['MACD_Signal']):
                 result['MACD'] = float(latest['MACD'])
                 result['MACD_Signal'] = float(latest['MACD_Signal'])
                 result['MACD_Hist'] = float(latest['MACD_Hist']) if 'MACD_Hist' in latest else float(latest['MACD'] - latest['MACD_Signal'])
-                
                 # Add MACD interpretation
                 if latest['MACD'] > latest['MACD_Signal']:
                     result['MACD_signal'] = 'bullish'
                 else:
                     result['MACD_signal'] = 'bearish'
-        
+
         # Moving Averages
         if 'SMA_20' in latest and 'SMA_50' in latest:
             if not pd.isna(latest['SMA_20']) and not pd.isna(latest['SMA_50']):
                 result['SMA_20'] = float(latest['SMA_20'])
                 result['SMA_50'] = float(latest['SMA_50'])
-                
                 # Determine trend based on MAs
                 if close_price > latest['SMA_20'] > latest['SMA_50']:
                     result['trend'] = 'strong_uptrend'
@@ -558,21 +566,18 @@ def extract_key_indicators(data):
                     result['trend'] = 'potential_downtrend'
                 else:
                     result['trend'] = 'neutral'
-        
+
         # Bollinger Bands
         if all(band in latest for band in ['BB_Upper', 'BB_Middle', 'BB_Lower']):
             if not any(pd.isna(latest[band]) for band in ['BB_Upper', 'BB_Middle', 'BB_Lower']):
                 result['BB_Upper'] = float(latest['BB_Upper'])
                 result['BB_Middle'] = float(latest['BB_Middle'])
                 result['BB_Lower'] = float(latest['BB_Lower'])
-                
                 # Calculate % bandwidth and %B
                 bandwidth = (latest['BB_Upper'] - latest['BB_Lower']) / latest['BB_Middle'] * 100
                 percent_b = (close_price - latest['BB_Lower']) / (latest['BB_Upper'] - latest['BB_Lower']) if (latest['BB_Upper'] - latest['BB_Lower']) != 0 else 0.5
-                
                 result['BB_Bandwidth'] = float(bandwidth)
                 result['BB_PercentB'] = float(percent_b)
-                
                 # BB interpretation
                 if close_price > latest['BB_Upper']:
                     result['BB_signal'] = 'overbought'
@@ -580,30 +585,28 @@ def extract_key_indicators(data):
                     result['BB_signal'] = 'oversold'
                 else:
                     result['BB_signal'] = 'neutral'
-        
-                # Volatility (ATR)
+
+        # Volatility (ATR)
         if 'ATR' in latest and not pd.isna(latest['ATR']):
             result['ATR'] = float(latest['ATR'])
             # Express ATR as percentage of price
             result['ATR_percent'] = float(latest['ATR'] / close_price * 100)
-            
+
         # Volume indicators if available
         if 'Volume' in latest and not pd.isna(latest['Volume']):
             result['Volume'] = float(latest['Volume'])
-            
             # If we have enough data, calculate volume trends
             if len(data) >= 20 and 'Volume' in data.columns:
                 avg_volume = data['Volume'].rolling(window=20).mean().iloc[-1]
                 result['Volume_avg_20d'] = float(avg_volume)
                 result['Volume_ratio'] = float(latest['Volume'] / avg_volume) if avg_volume > 0 else 1.0
-        
+
         # Calculate momentum
         if len(data) >= 14:
             momentum_14d = (close_price / data['Close'].iloc[-14] - 1) * 100
             result['Momentum_14d'] = float(momentum_14d)
-        
+
         return result
-        
     except Exception as e:
         print(f"Error extracting key indicators: {e}")
         return None
@@ -614,20 +617,18 @@ def extract_key_indicators(data):
 def generate_chart(data, symbol, forecast=None, timeframe="1day"):
     """
     Generate a chart for the given data and save it to a file.
-    
     Args:
         data (pd.DataFrame): Historical price data
         symbol (str): Stock ticker symbol
         forecast (list, optional): Forecasted prices
         timeframe (str): Timeframe of the data
-        
     Returns:
         str: Filename of the generated chart
     """
     try:
         # Create figure and subplots
         fig, ax = plt.subplots(figsize=(12, 6), facecolor='#1a1a1a')
-        
+
         # Set dark theme
         ax.set_facecolor('#1a1a1a')
         ax.spines['bottom'].set_color('#666666')
@@ -639,7 +640,7 @@ def generate_chart(data, symbol, forecast=None, timeframe="1day"):
         ax.yaxis.label.set_color('#cccccc')
         ax.xaxis.label.set_color('#cccccc')
         ax.grid(alpha=0.15)
-        
+
         # Format dates based on timeframe
         if timeframe in ["5min", "30min", "2h", "4h"]:
             date_format = '%H:%M'
@@ -647,88 +648,85 @@ def generate_chart(data, symbol, forecast=None, timeframe="1day"):
             date_format = '%m/%d'
         else:
             date_format = '%b %Y'
-            
+
         # Plot historical data
         has_extended_hours = 'session' in data.columns
-        
         if has_extended_hours:
             # Separate data by session
             regular_data = data[data['session'] == 'regular']
             pre_market_data = data[data['session'] == 'pre-market']
             after_hours_data = data[data['session'] == 'after-hours']
-            
+
             # Plot each session with different colors
             if not regular_data.empty:
                 ax.plot(regular_data.index, regular_data['Close'], color='#4da6ff', linewidth=2, label='Regular Hours')
-            
             if not pre_market_data.empty:
                 ax.plot(pre_market_data.index, pre_market_data['Close'], color='#90caf9', linewidth=2, label='Pre-Market')
-            
             if not after_hours_data.empty:
                 ax.plot(after_hours_data.index, after_hours_data['Close'], color='#ffb74d', linewidth=2, label='After-Hours')
         else:
             # Plot all data with a single color
             ax.plot(data.index, data['Close'], color='#4da6ff', linewidth=2, label='Historical')
-        
+
         # Add vertical line to separate historical from forecast
         if forecast and len(forecast) > 0:
             last_historical_date = data.index[-1]
             ax.axvline(x=last_historical_date, color='#ffffff', linestyle='--', alpha=0.5)
-            
-            # Plot forecast
-            # Calculate forecast dates
-            if timeframe.endswith("min"):
-                minutes = int(timeframe.replace("min", ""))
-                forecast_dates = [data.index[-1] + timedelta(minutes=minutes * (i+1)) for i in range(len(forecast))]
-            elif timeframe.endswith("h"):
-                hours = int(timeframe.replace("h", ""))
-                forecast_dates = [data.index[-1] + timedelta(hours=hours * (i+1)) for i in range(len(forecast))]
-            else:
-                forecast_dates = pd.date_range(start=data.index[-1] + timedelta(days=1), periods=len(forecast), freq='B')
-            
-            # Plot forecast line
-            ax.plot(forecast_dates, forecast, color='#ffcc00', linewidth=2, linestyle='--', marker='o', label='Forecast')
-            
-            # Shade the forecast region
-            ax.fill_between(forecast_dates, 
-                           [min(data['Close'].min(), min(forecast)) * 0.98] * len(forecast_dates), 
-                           [max(data['Close'].max(), max(forecast)) * 1.02] * len(forecast_dates), 
-                           color='#ffcc00', alpha=0.05)
-        
-        # Add title and labels
+
+        # Plot forecast
+        # Calculate forecast dates
+        if timeframe.endswith("min"):
+            minutes = int(timeframe.replace("min", ""))
+            forecast_dates = [data.index[-1] + timedelta(minutes=minutes * (i+1)) for i in range(len(forecast))]
+        elif timeframe.endswith("h"):
+            hours = int(timeframe.replace("h", ""))
+            forecast_dates = [data.index[-1] + timedelta(hours=hours * (i+1)) for i in range(len(forecast))]
+        else:
+            forecast_dates = pd.date_range(start=data.index[-1] + timedelta(days=1), periods=len(forecast), freq='B')
+
+        # Plot forecast line
+        ax.plot(forecast_dates, forecast, color='#ffcc00', linewidth=2, linestyle='--', marker='o', label='Forecast')
+
+        # Shade the forecast region
+        ax.fill_between(forecast_dates, 
+                        [min(data['Close'].min(), min(forecast)) * 0.98] * len(forecast_dates), 
+                        [max(data['Close'].max(), max(forecast)) * 1.02] * len(forecast_dates), 
+                        color='#ffcc00', alpha=0.05)
+
+                # Add title and labels
         timeframe_display = timeframe
         if timeframe == "1day": timeframe_display = "Daily"
         elif timeframe == "7day": timeframe_display = "Weekly"
         elif timeframe == "1mo": timeframe_display = "Monthly"
         elif timeframe == "3mo": timeframe_display = "Quarterly"
         elif timeframe == "1yr": timeframe_display = "Yearly"
-        
+
         plt.title(f"{symbol} {timeframe_display} Chart", color='white', fontsize=16)
         plt.xlabel('Date', color='#cccccc')
         plt.ylabel('Price ($)', color='#cccccc')
-        
+
         # Format x-axis dates
         fig.autofmt_xdate()
-        
+
         # Add legend with dark theme
         if has_extended_hours or (forecast and len(forecast) > 0):
             legend = plt.legend(frameon=True, facecolor='#1a1a1a', edgecolor='#666666')
             for text in legend.get_texts():
                 text.set_color('#cccccc')
-        
+
         # Save chart to memory
         buf = io.BytesIO()
         plt.tight_layout()
         plt.savefig(buf, format='png', dpi=100, facecolor='#1a1a1a')
         buf.seek(0)
-        
+
         # Convert to base64 for embedding in HTML
         chart_data = base64.b64encode(buf.getvalue()).decode('utf-8')
         data_url = f"data:image/png;base64,{chart_data}"
-        
+
         # Close the plot to free memory
         plt.close(fig)
-        
+
         return data_url
     except Exception as e:
         print(f"Error generating chart: {e}")
@@ -815,10 +813,13 @@ def mean_reversion_forecast(data, periods=5):
         for i in range(periods):
             # Calculate reversion component
             reversion = (mean_price - last_price) * reversion_speed
+            
             # Add some noise
             noise = std_dev * np.random.normal(0, 0.3)
+            
             # Calculate new price
             new_price = last_price + reversion + noise
+            
             # Update for next iteration
             forecast.append(float(new_price))
             last_price = new_price
@@ -829,6 +830,67 @@ def mean_reversion_forecast(data, periods=5):
         print(f"Error in mean reversion forecast: {e}")
         # Fall back to a simple forecast
         return [data["Close"].iloc[-1]] * periods
+
+# ---------------------------
+# New: Market Regime Detection Function
+# ---------------------------
+def detect_market_regime(data):
+    """
+    Detect the current market regime based on price action and indicators.
+    Args:
+        data (pd.DataFrame): Historical price data
+    Returns:
+        str: Market regime type ('trending_up', 'trending_down', 'mean_reverting', 'volatile', or 'unknown')
+    """
+    try:
+        # Add technical indicators if they don't exist
+        if 'SMA_20' not in data.columns or 'SMA_50' not in data.columns:
+            data = calculate_technical_indicators(data)
+        
+        # Get latest values
+        latest = data.iloc[-1]
+        
+        # Calculate volatility (standard deviation of returns)
+        returns = data['Close'].pct_change().dropna()
+        volatility = returns.std()
+        avg_volatility = 0.015  # Typical daily volatility for stocks
+        
+        # Calculate directional movement
+        price_change_20d = (data['Close'].iloc[-1] / data['Close'].iloc[-min(20, len(data))] - 1) * 100
+        
+        # Check if current volatility is high
+        is_volatile = volatility > (avg_volatility * 1.5)
+        
+        # Check trend indicators
+        if 'SMA_20' in latest and 'SMA_50' in latest and not pd.isna(latest['SMA_20']) and not pd.isna(latest['SMA_50']):
+            sma_20 = latest['SMA_20']
+            sma_50 = latest['SMA_50']
+            close = latest['Close']
+            
+            # Strong uptrend
+            if close > sma_20 > sma_50 and price_change_20d > 3:
+                return 'trending_up'
+            
+            # Strong downtrend
+            elif close < sma_20 < sma_50 and price_change_20d < -3:
+                return 'trending_down'
+        
+        # Check for mean reversion characteristics
+        if 'RSI' in latest and not pd.isna(latest['RSI']):
+            rsi = latest['RSI']
+            # Potential mean reversion if RSI is in extreme territories
+            if (rsi < 30 or rsi > 70) and not is_volatile:
+                return 'mean_reverting'
+        
+        # Check for high volatility regime
+        if is_volatile:
+            return 'volatile'
+        
+        # Default regime when no clear patterns
+        return 'unknown'
+    except Exception as e:
+        print(f"Error detecting market regime: {e}")
+        return 'unknown'
 
 # ---------------------------
 # Enhanced Forecasting System with Extended Hours Support
@@ -904,6 +966,7 @@ def enhanced_forecast(data, periods=5, timeframe="1day"):
                     if after_hours_volatility > regular_volatility * 1.2:
                         # If after-hours is more volatile, slightly increase forecast volatility
                         recent_volatility *= 1.1
+
             except Exception as e:
                 print(f"Error analyzing extended hours volatility: {e}")
 
@@ -911,18 +974,19 @@ def enhanced_forecast(data, periods=5, timeframe="1day"):
         enhanced_forecast = []
         last_price = close_prices[-1]
         last_direction = 1  # Start with upward movement
+
         for i in range(periods):
             # Get the trend component
             trend = base_forecast[i]
-            
+
             # Determine if we should change direction based on historical frequency
             if np.random.random() < direction_change_frequency:
                 last_direction *= -1
-                
+
             # Generate a random component based on historical volatility
             # More volatile stocks will have larger random components
             random_component = last_price * recent_volatility * np.random.normal(0, 1.5)
-            
+
             # Combine trend and random component with direction bias
             if i == 0:
                 # First forecast point should be closer to the last actual price
@@ -930,37 +994,36 @@ def enhanced_forecast(data, periods=5, timeframe="1day"):
             else:
                 # Later points can deviate more
                 weight_random = 0.6
-                
+
             # Calculate the forecast with random component
             new_price = trend + (random_component * weight_random * last_direction)
-            
+
             # Ensure some minimum movement
             min_movement = last_price * avg_daily_movement * 0.5
             if abs(new_price - last_price) < min_movement:
                 new_price = last_price + (min_movement * last_direction)
-                
+
             # Add some persistence to avoid unrealistic jumps
             if i > 0:
                 # Pull slightly toward previous forecast point
                 new_price = 0.7 * new_price + 0.3 * enhanced_forecast[-1]
-                
+
             # Ensure the forecast doesn't go negative
             new_price = max(new_price, 0.01 * last_price)
             
             enhanced_forecast.append(float(new_price))
             last_price = new_price
-            
+
         # 4. Ensure the forecast maintains overall trend direction from the base forecast
         trend_direction = 1 if base_forecast[-1] > base_forecast[0] else -1
         actual_direction = 1 if enhanced_forecast[-1] > enhanced_forecast[0] else -1
-        
+
         if trend_direction != actual_direction:
             # Adjust the last point to maintain the overall trend direction
             enhanced_forecast[-1] = enhanced_forecast[0] + abs(enhanced_forecast[-1] - enhanced_forecast[0]) * trend_direction
-            
+
         print(f"Enhanced forecast: {enhanced_forecast}")
         return enhanced_forecast
-            
     except Exception as e:
         print(f"Error in enhanced forecast: {e}")
         # Fall back to a simple forecast
@@ -979,13 +1042,14 @@ def create_extended_hours_features(df):
     """
     # Make a copy to avoid modifying the original
     result = df.copy()
+    
     if 'session' not in result.columns:
         return result
-
+        
     # Calculate pre-market to previous close change
     result['pre_market_change'] = 0.0
     result['after_hours_change'] = 0.0
-
+    
     # Group by date to find pre-market and after-hours changes
     if isinstance(result.index, pd.DatetimeIndex):
         # Extract dates for grouping
@@ -1025,20 +1089,20 @@ def create_extended_hours_features(df):
                 if regular_close > 0:
                     after_hours_change = (after_hours_close - regular_close) / regular_close
                     result.loc[date_mask, 'after_hours_change'] = after_hours_change
-    
-    # Create rolling averages for these features
-    result['pre_market_change_5d'] = result['pre_market_change'].rolling(5).mean()
-    result['after_hours_change_5d'] = result['after_hours_change'].rolling(5).mean()
-    
-    # Fill NA values with 0
-    for col in ['pre_market_change', 'after_hours_change', 
-                'pre_market_change_5d', 'after_hours_change_5d']:
-        result[col] = result[col].fillna(0)
         
-    # Remove the temporary date column
-    if 'date' in result.columns:
-        result.drop('date', axis=1, inplace=True)
+        # Create rolling averages for these features
+        result['pre_market_change_5d'] = result['pre_market_change'].rolling(5).mean()
+        result['after_hours_change_5d'] = result['after_hours_change'].rolling(5).mean()
         
+        # Fill NA values with 0
+        for col in ['pre_market_change', 'after_hours_change', 
+                   'pre_market_change_5d', 'after_hours_change_5d']:
+            result[col] = result[col].fillna(0)
+        
+        # Remove the temporary date column
+        if 'date' in result.columns:
+            result.drop('date', axis=1, inplace=True)
+            
     return result
 
 def adjust_forecast_volatility(forecast, data):
@@ -1098,7 +1162,7 @@ def adjust_forecast_volatility(forecast, data):
                 vol *= 1.2
         else:
             vol = recent_volatility
-        
+            
         random_component = forecast[i-1] * vol * np.random.normal(0, 0.8)
         
         # Add autocorrelation - volatility tends to cluster
@@ -1138,17 +1202,17 @@ def improved_ensemble_forecast(data, periods=5, timeframe="1day"):
         if has_extended_hours:
             # Create extended hours features
             df = create_extended_hours_features(df)
-            
+        
         # Create features from lagged prices and indicators
         features = create_features(df)
         
         # Add extended hours features if available
         if has_extended_hours:
             for col in ['pre_market_change', 'after_hours_change', 
-                        'pre_market_change_5d', 'after_hours_change_5d']:
+                       'pre_market_change_5d', 'after_hours_change_5d']:
                 if col in df.columns:
                     features[col] = df[col]
-        
+
         # Train multiple models
         models = {
             "linear": train_linear_model(features, df['Close']),
@@ -1184,7 +1248,7 @@ def improved_ensemble_forecast(data, periods=5, timeframe="1day"):
             model_errors["poly_reg"] = 10
         else:
             model_errors["arima"] = 12
-        
+            
         # Enhanced forecast typically performs well
         model_errors["enhanced"] = 8
         
@@ -1196,7 +1260,7 @@ def improved_ensemble_forecast(data, periods=5, timeframe="1day"):
                 weights[model_name] = (1/error) / total_error
             else:
                 weights[model_name] = 0.1  # Default weight for zero error (unlikely)
-                
+        
         print(f"Model weights based on performance: {weights}")
         
         # Generate forecasts using each model
@@ -1223,21 +1287,32 @@ def improved_ensemble_forecast(data, periods=5, timeframe="1day"):
         for i in range(periods):
             weighted_sum = 0
             weight_total = 0
-            
             for model_name, prediction in predictions.items():
                 if model_name in weights and i < len(prediction):
                     weighted_sum += prediction[i] * weights.get(model_name, 0)
                     weight_total += weights.get(model_name, 0)
             
             ensemble_val = weighted_sum / weight_total if weight_total > 0 else data["Close"].iloc[-1]
+            
+            # Ensure the forecast value is within reasonable bounds (15% max change)
+            last_price = float(data["Close"].iloc[-1])
+            max_change_percent = 15
+            max_price = last_price * (1 + max_change_percent/100)
+            min_price = last_price * (1 - max_change_percent/100)
+            ensemble_val = max(min_price, min(max_price, ensemble_val))
+            
             ensemble_forecast.append(float(ensemble_val))
+        
+        print(f"Final ensemble forecast: {ensemble_forecast}")
         
         # Adjust for volatility - now session-aware if extended hours data is available
         return adjust_forecast_volatility(ensemble_forecast, data)
-        
     except Exception as e:
         print(f"Error in improved ensemble forecast: {e}")
-        return enhanced_forecast(data, periods, timeframe)
+        # Provide a safe fallback forecast
+        last_price = float(data["Close"].iloc[-1])
+        return [last_price] * periods
+
 def regime_aware_forecast(data, periods=5, timeframe="1day"):
     """
     Generate forecasts that adapt to the current market regime.
@@ -1257,7 +1332,7 @@ def regime_aware_forecast(data, periods=5, timeframe="1day"):
                     base_forecast = arima_prediction(arima_model)
                 except:
                     base_forecast = linear_regression_forecast(data, periods, degree=1)
-            
+                    
             # Enhance trend slightly
             enhanced_trend = []
             last_close = data['Close'].iloc[-1]
@@ -1279,7 +1354,7 @@ def regime_aware_forecast(data, periods=5, timeframe="1day"):
                     base_forecast = arima_prediction(arima_model)
                 except:
                     base_forecast = linear_regression_forecast(data, periods, degree=1)
-            
+                    
             # Enhance downtrend slightly
             enhanced_trend = []
             last_close = data['Close'].iloc[-1]
@@ -1310,6 +1385,7 @@ def regime_aware_forecast(data, periods=5, timeframe="1day"):
                 volatile_forecast.append(new_price)
                 
             return volatile_forecast
+            
         else:  # unknown regime
             # Use the standard ensemble forecast
             return improved_ensemble_forecast(data, periods, timeframe)
@@ -1340,7 +1416,7 @@ def market_aware_forecast(data, periods=5, timeframe="1day", symbol="AAPL"):
             baseline = enhanced_forecast(data, periods, timeframe)
         else:
             baseline = improved_ensemble_forecast(data, periods, timeframe)
-            
+        
         # Check if we have extended hours data
         has_extended_hours = 'session' in data.columns
         
@@ -1355,7 +1431,6 @@ def market_aware_forecast(data, periods=5, timeframe="1day", symbol="AAPL"):
                 if not pre_market_data.empty and not regular_data.empty:
                     # Calculate pre-market sentiment
                     pre_market_change = pre_market_data['Close'].pct_change().mean() * 100
-                    
                     # Incorporate pre-market sentiment into forecast
                     if abs(pre_market_change) > 1.0:  # Only adjust if significant
                         adjustment_factor = 1.0 + (pre_market_change * 0.02)
@@ -1364,7 +1439,6 @@ def market_aware_forecast(data, periods=5, timeframe="1day", symbol="AAPL"):
                 if not after_hours_data.empty and not regular_data.empty:
                     # Calculate after-hours sentiment
                     after_hours_change = after_hours_data['Close'].pct_change().mean() * 100
-                    
                     # Incorporate after-hours sentiment into forecast
                     if abs(after_hours_change) > 1.0:  # Only adjust if significant
                         adjustment_factor = 1.0 + (after_hours_change * 0.015)
@@ -1372,9 +1446,8 @@ def market_aware_forecast(data, periods=5, timeframe="1day", symbol="AAPL"):
             except Exception as e:
                 print(f"Error adjusting for extended hours sentiment: {e}")
                 return baseline
-                
-        return baseline
         
+        return baseline
     except Exception as e:
         print(f"Error in market-aware forecast: {e}")
         return improved_ensemble_forecast(data, periods, timeframe)
@@ -1402,7 +1475,7 @@ def create_features(df, target_col='Close', window=10):
     # Lagged prices
     for i in range(1, window + 1):
         X[f'lag_{i}'] = df[target_col].shift(i)
-    
+        
     # Price changes
     X['return_1d'] = df[target_col].pct_change(1)
     X['return_5d'] = df[target_col].pct_change(window // 2)
@@ -1418,7 +1491,7 @@ def create_features(df, target_col='Close', window=10):
     
     # Extended hours features if available
     for col in ['pre_market_change', 'after_hours_change', 
-                'pre_market_change_5d', 'after_hours_change_5d']:
+               'pre_market_change_5d', 'after_hours_change_5d']:
         if col in df.columns:
             X[col] = df[col]
     
@@ -1436,6 +1509,7 @@ def train_linear_model(X, y):
     """Train a linear regression model."""
     try:
         model = LinearRegression()
+        
         # Drop rows with NaN values
         X_clean = X.dropna()
         y_clean = y.loc[X_clean.index]
@@ -1453,6 +1527,7 @@ def train_ridge_model(X, y):
     """Train a ridge regression model."""
     try:
         model = Ridge(alpha=1.0)
+        
         # Drop rows with NaN values
         X_clean = X.dropna()
         y_clean = y.loc[X_clean.index]
@@ -1470,6 +1545,7 @@ def train_gb_model(X, y):
     """Train a gradient boosting regressor model."""
     try:
         model = GradientBoostingRegressor(n_estimators=50, learning_rate=0.1, max_depth=3, random_state=42)
+        
         # Drop rows with NaN values
         X_clean = X.dropna()
         y_clean = y.loc[X_clean.index]
@@ -1488,6 +1564,7 @@ def train_svm_model(X, y):
     try:
         # Scale the data
         scaler = StandardScaler()
+        
         # Drop rows with NaN values
         X_clean = X.dropna()
         y_clean = y.loc[X_clean.index]
@@ -1496,6 +1573,7 @@ def train_svm_model(X, y):
             return None
             
         X_scaled = scaler.fit_transform(X_clean)
+        
         model = SVR(kernel='rbf', C=100, gamma=0.1)
         model.fit(X_scaled, y_clean)
         
@@ -1593,7 +1671,7 @@ def generate_forecast_ohlc(data, forecast):
         else:
             metrics = {'range': avg_range, 'body': avg_body_size}
             current_session = 'regular'
-            
+        
         # Calculate volatility factor - more movement for later forecast days
         volatility_factor = 1.0 + (i * 0.1)  # Increases volatility for later days
         
@@ -1619,7 +1697,7 @@ def generate_forecast_ohlc(data, forecast):
             upper_wick = day_range - body_height - lower_wick
             high = max(close, open_price) + upper_wick
             low = min(close, open_price) - lower_wick
-            
+        
         # Make sure high is at least slightly higher than both open and close
         high = max(high, open_price * 1.001, close * 1.001)
         
@@ -1658,9 +1736,13 @@ def get_chart_data(data, forecast, timeframe):
     # Ensure forecast is a list of floats
     if forecast is not None:
         forecast = [float(f) for f in forecast]
-        
+    
     historical_dates = data.index.strftime("%Y-%m-%dT%H:%M:%SZ").tolist()
-    historical_values = data["Close"].tolist()
+    historical_values = [float(val) for val in data["Close"].tolist()]
+    
+    # Debug log the values to verify data
+    print(f"Sample historical values: {historical_values[:5]}")
+    print(f"Sample forecast values: {forecast}")
     
     # Add OHLC data if available
     historical_ohlc = None
@@ -1721,7 +1803,7 @@ def get_chart_data(data, forecast, timeframe):
     if historical_ohlc:
         result["ohlc"] = historical_ohlc
         result["forecastOhlc"] = forecast_ohlc
-    
+        
     return result
 
 # ---------------------------
@@ -1749,14 +1831,14 @@ class SignalGenerator:
         # Safety check for data
         if not isinstance(data, pd.DataFrame) or len(data) < 5:
             return {"overall": {"type": "hold", "strength": "weak"}, "components": {}}
-            
+        
         # Ensure we have indicators
         if include_indicators:
             try:
                 data = calculate_technical_indicators(data)
             except Exception as e:
                 print(f"Error calculating indicators: {e}")
-                
+        
         try:
             # Signal dictionary
             signals = {"components": {}}
@@ -1775,7 +1857,7 @@ class SignalGenerator:
                 trend_weight, momentum_weight = 0.3, 0.7
             else:  # moderate
                 trend_weight, momentum_weight = 0.5, 0.5
-                
+            
             # Calculate score (-100 to +100)
             trend_score = self._component_to_score(trend)
             momentum_score = self._component_to_score(momentum)
@@ -1792,7 +1874,7 @@ class SignalGenerator:
             else:
                 overall_type = "hold"
                 overall_strength = "moderate" if abs(signal_score) > 25 else "weak"
-                
+            
             signals["overall"] = {
                 "type": overall_type,
                 "strength": overall_strength,
@@ -1805,12 +1887,11 @@ class SignalGenerator:
                 signals["risk_management"] = self._calculate_buy_risk_management(data)
             elif overall_type == "sell":
                 signals["risk_management"] = self._calculate_sell_risk_management(data)
-                
+            
             # Generate signal text
             signals["signal_text"] = self._generate_signal_text(signals["overall"], signals.get("risk_management"))
             
             return signals
-            
         except Exception as e:
             print(f"Error generating trading signals: {e}")
             return {"overall": {"type": "hold", "strength": "weak"}, "components": {}}
@@ -1824,7 +1905,7 @@ class SignalGenerator:
             return 100 if strength == "strong" else 60 if strength == "moderate" else 30
         elif signal_type == "sell":
             return -100 if strength == "strong" else -60 if strength == "moderate" else -30
-        
+            
         return 0
     
     def _simple_trend_signal(self, data):
@@ -1872,7 +1953,6 @@ class SignalGenerator:
             
             if has_rsi:
                 rsi = latest['RSI']
-                
                 if rsi < 30:
                     return {"type": "buy", "strength": "strong", "reason": "Oversold (RSI)"}
                 elif rsi < 40:
@@ -2070,7 +2150,7 @@ class EnhancedNewsSentimentAnalyzer:
         """Calculate overall sentiment from a list of analyzed news items."""
         if not analyzed_items:
             return {"score": 0, "category": "neutral", "confidence": 0}
-            
+        
         # Weight more recent news higher and consider source credibility
         total_score = 0
         weights = 0
@@ -2123,7 +2203,7 @@ class EnhancedNewsSentimentAnalyzer:
             confidence = max(0, min(100, 100 * (1 - std_dev)))
         else:
             confidence = 50  # Default confidence for single source
-            
+        
         return {
             "score": avg_score,
             "category": category,
@@ -2138,7 +2218,7 @@ def analyze_news_sentiment(symbol):
         news = fetch_news(symbol, max_items=5)
         if not news:
             return {"score": 0, "category": "neutral", "confidence": 0}
-            
+        
         # Create analyzer instance
         analyzer = EnhancedNewsSentimentAnalyzer()
         
@@ -2169,7 +2249,6 @@ def process():
     timeframe = request.args.get("timeframe", "1mo")
     news_count = int(request.args.get("news_count", "5"))
     risk_appetite = request.args.get("risk_appetite", "moderate")
-    
     # Extended hours is always enabled
     include_extended_hours = True
     
@@ -2214,7 +2293,25 @@ def process():
                                 forecast = linear_regression_forecast(data, periods=5, degree=1)
         
         # Prepare chart data - needed for the UI
-        chart_data = get_chart_data(data, forecast, timeframe)
+        try:
+            chart_data = get_chart_data(data, forecast, timeframe)
+            print(f"Chart data symbol: {chart_data['symbol']}")
+            print(f"Chart data timeframe: {chart_data['timeframe']}")
+            print(f"Historical data points: {len(chart_data['historicalValues'])}")
+            print(f"Forecast data points: {len(chart_data['forecastValues'])}")
+            if 'ohlc' in chart_data:
+                print(f"OHLC data points: {len(chart_data['ohlc'])}")
+        except Exception as e:
+            print(f"Error generating chart data: {e}")
+            # Provide minimal fallback chart data
+            chart_data = {
+                "symbol": symbol,
+                "timeframe": timeframe,
+                "historicalDates": data.index.strftime("%Y-%m-%dT%H:%M:%SZ").tolist(),
+                "historicalValues": [float(x) for x in data["Close"].tolist()],
+                "forecastDates": [],
+                "forecastValues": []
+            }
         
         # Add flag for extended hours
         has_extended_hours = 'session' in data.columns
@@ -2319,7 +2416,6 @@ def process():
                         data['date'] = data.index.date
                         latest_date = max(data['date'])
                         today_data = data[data['date'] == latest_date]
-                        
                         pre_market_data = today_data[today_data['session'] == 'pre-market']
                         regular_data = today_data[today_data['session'] == 'regular']
                         after_hours_data = today_data[today_data['session'] == 'after-hours']
@@ -2335,7 +2431,7 @@ def process():
                             if prev_close is not None:
                                 pre_market_gap = (pre_open - prev_close) / prev_close * 100
                                 eh_info += f"- Pre-market gap: {pre_market_gap:.2f}%\n"
-                            
+                                
                             pre_market_change = (pre_close - pre_open) / pre_open * 100
                             eh_info += f"- Pre-market session change: {pre_market_change:.2f}%\n"
                         
