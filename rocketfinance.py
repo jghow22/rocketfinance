@@ -22,6 +22,13 @@ from nltk.sentiment.vader import SentimentIntensityAnalyzer
 from textblob import TextBlob
 from enum import Enum
 import time  # For retry delays
+import json
+import uuid
+
+# Google Sheets integration
+import gspread
+from google.oauth2.service_account import Credentials
+
 # Try to import TensorFlow but don't fail if it's not available
 try:
     import tensorflow as tf
@@ -48,6 +55,37 @@ try:
     nltk.data.find('vader_lexicon')
 except LookupError:
     nltk.download('vader_lexicon')
+
+# Initialize Google Sheets database
+try:
+    # Try to get credentials from JSON string environment variable
+    google_creds_json = os.getenv('GOOGLE_CREDENTIALS_JSON')
+    if google_creds_json:
+        # Write the JSON directly to a temporary file
+        credentials_path = 'temp_credentials.json'
+        with open(credentials_path, 'w') as f:
+            f.write(google_creds_json)
+    else:
+        # Fall back to file path
+        credentials_path = os.getenv('GOOGLE_CREDENTIALS_PATH', 'credentials.json')
+    
+    spreadsheet_name = os.getenv('GOOGLE_SHEETS_DB_NAME', 'RedTapeTradingDB')
+    
+    # Set up scope for Google Sheets API
+    scope = [
+        'https://www.googleapis.com/auth/spreadsheets',
+        'https://www.googleapis.com/auth/drive'
+    ]
+    
+    # Authorize and connect to the spreadsheet
+    credentials = Credentials.from_service_account_file(credentials_path, scopes=scope)
+    client = gspread.authorize(credentials)
+    sheets_db = client.open(spreadsheet_name)
+    
+    print(f"Connected to Google Sheets database: {spreadsheet_name}")
+except Exception as e:
+    print(f"Error connecting to Google Sheets database: {e}")
+    sheets_db = None
 
 # ---------------------------
 # Helper: Create Dark Style for mplfinance
@@ -1228,7 +1266,7 @@ def improved_ensemble_forecast(data, periods=5, timeframe="1day"):
             
             print(f"4h special forecast: {volatility_adjusted}")
             return volatility_adjusted
-            
+        
         # Check if we have session data (extended hours)
         has_extended_hours = 'session' in data.columns
         
@@ -2299,6 +2337,360 @@ def analyze_news_sentiment(symbol):
         return {"score": 0, "category": "neutral", "confidence": 0}
 
 # ---------------------------
+# Google Sheets Database Functions
+# ---------------------------
+
+def add_trading_signal(symbol, timeframe, signal_type, strength, entry_price, stop_loss, take_profit, risk_reward=None):
+    """
+    Add a new trading signal to the Google Sheets database.
+    
+    Args:
+        symbol (str): Stock symbol
+        timeframe (str): Timeframe of the signal
+        signal_type (str): Type of signal (buy, sell, hold)
+        strength (str): Strength of the signal
+        entry_price (float): Entry price
+        stop_loss (float): Stop loss price
+        take_profit (float): Take profit price
+        risk_reward (float, optional): Risk/reward ratio
+        
+    Returns:
+        bool: True if successful, False otherwise
+    """
+    if sheets_db is None:
+        print("Google Sheets database is not available")
+        return False
+    
+    try:
+        # Get the trading_signals worksheet
+        worksheet = sheets_db.worksheet("trading_signals")
+        
+        # Create a new row with the signal data
+        signal_id = str(uuid.uuid4())
+        created_at = datetime.now().isoformat()
+        
+        # Format the values to ensure they're strings
+        entry_price_str = f"{float(entry_price):.2f}" if entry_price is not None else ""
+        stop_loss_str = f"{float(stop_loss):.2f}" if stop_loss is not None else ""
+        take_profit_str = f"{float(take_profit):.2f}" if take_profit is not None else ""
+        risk_reward_str = f"{float(risk_reward):.2f}" if risk_reward is not None else ""
+        
+        # Create the new row
+        new_row = [
+            signal_id,
+            symbol,
+            timeframe,
+            signal_type,
+            strength,
+            entry_price_str,
+            stop_loss_str,
+            take_profit_str,
+            created_at
+        ]
+        
+        # Append the row to the worksheet
+        worksheet.append_row(new_row)
+        print(f"Added trading signal for {symbol} ({timeframe}): {signal_type} {strength}")
+        return True
+    except Exception as e:
+        print(f"Error adding trading signal to Google Sheets: {e}")
+        return False
+
+def add_forecast_record(symbol, timeframe, current_price, forecast_prices, regime=None):
+    """
+    Add a new forecast record to the Google Sheets database.
+    
+    Args:
+        symbol (str): Stock symbol
+        timeframe (str): Timeframe of the forecast
+        current_price (float): Current price when forecast was made
+        forecast_prices (list): List of forecasted prices
+        regime (str, optional): Market regime
+        
+    Returns:
+        str: Forecast ID if successful, None otherwise
+    """
+    if sheets_db is None:
+        print("Google Sheets database is not available")
+        return None
+    
+    try:
+        # Get the forecast_history worksheet
+        worksheet = sheets_db.worksheet("forecast_history")
+        
+        # Create a new row with the forecast data
+        forecast_id = str(uuid.uuid4())
+        created_at = datetime.now().isoformat()
+        
+        # Format the values
+        current_price_str = f"{float(current_price):.2f}" if current_price is not None else ""
+        forecast_prices_json = json.dumps([float(price) for price in forecast_prices])
+        
+        # Create the new row
+        new_row = [
+            forecast_id,
+            symbol,
+            timeframe,
+            current_price_str,
+            forecast_prices_json,
+            regime or "",
+            "",  # accuracy (to be updated later)
+            created_at
+        ]
+        
+        # Append the row to the worksheet
+        worksheet.append_row(new_row)
+        print(f"Added forecast for {symbol} ({timeframe})")
+        return forecast_id
+    except Exception as e:
+        print(f"Error adding forecast to Google Sheets: {e}")
+        return None
+
+def add_market_analysis(symbol, timeframe, technical_indicators, sentiment_score=None, market_regime=None, openai_analysis=None):
+    """
+    Add a market analysis record to the Google Sheets database.
+    
+    Args:
+        symbol (str): Stock symbol
+        timeframe (str): Timeframe of the analysis
+        technical_indicators (dict): Dictionary of technical indicators
+        sentiment_score (float, optional): News sentiment score
+        market_regime (str, optional): Market regime
+        openai_analysis (str, optional): OpenAI analysis text
+        
+    Returns:
+        bool: True if successful, False otherwise
+    """
+    if sheets_db is None:
+        print("Google Sheets database is not available")
+        return False
+    
+    try:
+        # Get the market_analysis worksheet
+        worksheet = sheets_db.worksheet("market_analysis")
+        
+        # Create a new row with the analysis data
+        analysis_id = str(uuid.uuid4())
+        created_at = datetime.now().isoformat()
+        
+        # Format the values
+        tech_indicators_json = json.dumps(technical_indicators)
+        sentiment_score_str = f"{float(sentiment_score):.4f}" if sentiment_score is not None else ""
+        
+        # Create the new row
+        new_row = [
+            analysis_id,
+            symbol,
+            timeframe,
+            tech_indicators_json,
+            sentiment_score_str,
+            market_regime or "",
+            openai_analysis or "",
+            created_at
+        ]
+        
+        # Append the row to the worksheet
+        worksheet.append_row(new_row)
+        print(f"Added market analysis for {symbol} ({timeframe})")
+        return True
+    except Exception as e:
+        print(f"Error adding market analysis to Google Sheets: {e}")
+        return False
+
+def update_forecast_accuracy(forecast_id, accuracy):
+    """
+    Update the accuracy of a forecast.
+    
+    Args:
+        forecast_id (str): ID of the forecast to update
+        accuracy (float): Accuracy score (e.g., percentage error)
+        
+    Returns:
+        bool: True if successful, False otherwise
+    """
+    if sheets_db is None:
+        print("Google Sheets database is not available")
+        return False
+    
+    try:
+        # Get the forecast_history worksheet
+        worksheet = sheets_db.worksheet("forecast_history")
+        
+        # Find the forecast row
+        all_forecasts = worksheet.get_all_records()
+        for i, forecast in enumerate(all_forecasts, start=2):  # Start from row 2 (after headers)
+            if forecast.get('forecast_id') == forecast_id:
+                # Update the accuracy column (column G)
+                worksheet.update_cell(i, 7, f"{float(accuracy):.4f}")
+                print(f"Updated accuracy for forecast {forecast_id}: {accuracy:.4f}")
+                return True
+        
+        print(f"Forecast {forecast_id} not found")
+        return False
+    except Exception as e:
+        print(f"Error updating forecast accuracy in Google Sheets: {e}")
+        return False
+
+def add_performance_tracking(symbol, forecast_id, actual_prices, forecast_error, market_conditions=None):
+    """
+    Add a performance tracking record.
+    
+    Args:
+        symbol (str): Stock symbol
+        forecast_id (str): ID of the related forecast
+        actual_prices (list): List of actual prices that occurred
+        forecast_error (float): Measure of forecast error
+        market_conditions (str, optional): Notes on market conditions
+        
+    Returns:
+        bool: True if successful, False otherwise
+    """
+    if sheets_db is None:
+        print("Google Sheets database is not available")
+        return False
+    
+    try:
+        # Get the performance_tracking worksheet
+        worksheet = sheets_db.worksheet("performance_tracking")
+        
+        # Create a new row
+        tracking_id = str(uuid.uuid4())
+        created_at = datetime.now().isoformat()
+        
+        # Format the values
+        actual_prices_json = json.dumps([float(price) for price in actual_prices])
+        forecast_error_str = f"{float(forecast_error):.4f}" if forecast_error is not None else ""
+        
+        # Create the new row
+        new_row = [
+            tracking_id,
+            symbol,
+            forecast_id,
+            actual_prices_json,
+            forecast_error_str,
+            market_conditions or "",
+            created_at
+        ]
+        
+        # Append the row to the worksheet
+        worksheet.append_row(new_row)
+        print(f"Added performance tracking for {symbol} (forecast {forecast_id})")
+        return True
+    except Exception as e:
+        print(f"Error adding performance tracking to Google Sheets: {e}")
+        return False
+
+def get_recent_signals(symbol=None, limit=10):
+    """
+    Get recent trading signals from the database.
+    
+    Args:
+        symbol (str, optional): Filter by symbol
+        limit (int): Maximum number of signals to return
+        
+    Returns:
+        list: List of signal records
+    """
+    if sheets_db is None:
+        print("Google Sheets database is not available")
+        return []
+    
+    try:
+        # Get the trading_signals worksheet
+        worksheet = sheets_db.worksheet("trading_signals")
+        
+        # Get all signals
+        all_signals = worksheet.get_all_records()
+        
+        # Filter by symbol if provided
+        if symbol:
+            filtered_signals = [s for s in all_signals if s.get('symbol') == symbol]
+        else:
+            filtered_signals = all_signals
+        
+        # Sort by created_at (newest first)
+        sorted_signals = sorted(filtered_signals, 
+                               key=lambda x: x.get('created_at', ''), 
+                               reverse=True)
+        
+        # Apply limit
+        return sorted_signals[:limit]
+    except Exception as e:
+        print(f"Error getting trading signals from Google Sheets: {e}")
+        return []
+
+def get_forecast_history(symbol=None, limit=10):
+    """
+    Get forecast history from the database.
+    
+    Args:
+        symbol (str, optional): Filter by symbol
+        limit (int): Maximum number of forecasts to return
+        
+    Returns:
+        list: List of forecast records
+    """
+    if sheets_db is None:
+        print("Google Sheets database is not available")
+        return []
+    
+    try:
+        # Get the forecast_history worksheet
+        worksheet = sheets_db.worksheet("forecast_history")
+        
+        # Get all forecasts
+        all_forecasts = worksheet.get_all_records()
+        
+        # Filter by symbol if provided
+        if symbol:
+            filtered_forecasts = [f for f in all_forecasts if f.get('symbol') == symbol]
+        else:
+            filtered_forecasts = all_forecasts
+        
+        # Parse forecast_prices JSON
+        for forecast in filtered_forecasts:
+            if 'forecast_prices' in forecast and isinstance(forecast['forecast_prices'], str):
+                try:
+                    forecast['forecast_prices'] = json.loads(forecast['forecast_prices'])
+                except json.JSONDecodeError:
+                    forecast['forecast_prices'] = []
+        
+        # Sort by created_at (newest first)
+        sorted_forecasts = sorted(filtered_forecasts, 
+                                 key=lambda x: x.get('created_at', ''), 
+                                 reverse=True)
+        
+        # Apply limit
+        return sorted_forecasts[:limit]
+    except Exception as e:
+        print(f"Error getting forecast history from Google Sheets: {e}")
+        return []
+
+# ---------------------------
+# API Endpoints for Database Access
+# ---------------------------
+
+@app.route("/api/signals", methods=["GET"])
+def get_signals_api():
+    """API endpoint to get trading signals."""
+    symbol = request.args.get("symbol")
+    limit = int(request.args.get("limit", 10))
+    
+    signals = get_recent_signals(symbol, limit)
+    
+    return jsonify({"signals": signals})
+
+@app.route("/api/forecasts", methods=["GET"])
+def get_forecasts_api():
+    """API endpoint to get forecast history."""
+    symbol = request.args.get("symbol")
+    limit = int(request.args.get("limit", 10))
+    
+    forecasts = get_forecast_history(symbol, limit)
+    
+    return jsonify({"forecasts": forecasts})
+
+# ---------------------------
 # Flask Routes
 # ---------------------------
 @app.route("/")
@@ -2353,6 +2745,29 @@ def process():
                                 forecast = arima_prediction(arima_model)
                             except:
                                 forecast = linear_regression_forecast(data, periods=5, degree=1)
+        
+        # Store forecast in Google Sheets
+        if sheets_db is not None:
+            try:
+                current_price = float(data["Close"].iloc[-1])
+                # Detect market regime
+                try:
+                    regime = detect_market_regime(data)
+                except Exception as e:
+                    print(f"Error detecting market regime: {e}")
+                    regime = "unknown"
+                    
+                # Add forecast to database
+                forecast_id = add_forecast_record(
+                    symbol, 
+                    timeframe, 
+                    current_price, 
+                    forecast, 
+                    regime
+                )
+            except Exception as e:
+                print(f"Error storing forecast in Google Sheets: {e}")
+                forecast_id = None
         
         # Prepare chart data - needed for the UI
         try:
@@ -2437,17 +2852,20 @@ def process():
         
         # Now process additional data in order of importance
         # 1. Technical indicators
+        technical_indicators_dict = None
         try:
             data_with_indicators = calculate_technical_indicators(data)
             key_indicators = extract_key_indicators(data_with_indicators)
             if key_indicators:
                 response["key_indicators"] = key_indicators
+                technical_indicators_dict = key_indicators
         except Exception as e:
             print(f"Error calculating indicators: {e}")
             data_with_indicators = data.copy()
         
         # 2. News data
         elapsed = (datetime.now() - start_time).total_seconds()
+        sentiment_analysis_result = None
         if elapsed < 18:  # Still have time
             try:
                 news = fetch_news(symbol, max_items=news_count)
@@ -2469,6 +2887,7 @@ def process():
         
         # 4. Generate AI analysis - ALWAYS try to use OpenAI
         elapsed = (datetime.now() - start_time).total_seconds()
+        openai_analysis_text = None
         if elapsed < 25:  # Give more time for OpenAI API call
             try:
                 # Check if OpenAI API key is available
@@ -2571,8 +2990,8 @@ def process():
                             temperature=0.7
                         )
                         
-                        ai_analysis = openai_response.choices[0].message.content
-                        response["openai_refined_prediction"] = ai_analysis
+                        openai_analysis_text = openai_response.choices[0].message.content
+                        response["openai_refined_prediction"] = openai_analysis_text
                         print("Successfully generated OpenAI analysis")
                         break
                     except Exception as e:
@@ -2583,12 +3002,13 @@ def process():
             except Exception as e:
                 print(f"Error generating AI analysis: {e}")
                 # Don't provide a fallback - make it clear there was an issue with OpenAI
-                response["openai_refined_prediction"] = f"""
+                openai_analysis_text = f"""
                 # OpenAI Analysis Unavailable
                 We're unable to provide an AI-powered analysis for {symbol.upper()} at this time.
                 **Reason:** {str(e)}
                 Please ensure your OPENAI_API_KEY environment variable is correctly set and try again.
                 """
+                response["openai_refined_prediction"] = openai_analysis_text
         
         # 5. Generate trading signals
         elapsed = (datetime.now() - start_time).total_seconds()
@@ -2596,6 +3016,28 @@ def process():
             try:
                 signals = generate_trading_signals(data_with_indicators, risk_appetite)
                 response["trading_signals"] = signals
+                
+                # Store signal in Google Sheets if applicable
+                if sheets_db is not None and signals["overall"]["type"] in ["buy", "sell"]:
+                    if signals["overall"]["strength"] in ["strong", "moderate"]:
+                        # Extract risk management info
+                        risk_mgmt = signals.get("risk_management", {})
+                        entry_price = risk_mgmt.get("entry", data["Close"].iloc[-1])
+                        stop_loss = risk_mgmt.get("stop_loss", 0)
+                        take_profit = risk_mgmt.get("take_profit_1", 0)
+                        risk_reward = risk_mgmt.get("risk_reward", 0)
+                        
+                        # Store the signal
+                        add_trading_signal(
+                            symbol,
+                            timeframe,
+                            signals["overall"]["type"],
+                            signals["overall"]["strength"],
+                            entry_price,
+                            stop_loss,
+                            take_profit,
+                            risk_reward
+                        )
             except Exception as e:
                 print(f"Error generating trading signals: {e}")
         
@@ -2606,8 +3048,29 @@ def process():
                 sentiment = analyze_news_sentiment(symbol)
                 if sentiment:
                     response["sentiment_analysis"] = sentiment
+                    sentiment_analysis_result = sentiment
             except Exception as e:
                 print(f"Error analyzing sentiment: {e}")
+        
+        # 7. Store market analysis in Google Sheets
+        if sheets_db is not None and technical_indicators_dict is not None:
+            try:
+                # Get sentiment score if available
+                sentiment_score = None
+                if sentiment_analysis_result:
+                    sentiment_score = sentiment_analysis_result.get("score")
+                
+                # Store market analysis
+                add_market_analysis(
+                    symbol,
+                    timeframe,
+                    technical_indicators_dict,
+                    sentiment_score,
+                    regime,
+                    openai_analysis_text
+                )
+            except Exception as e:
+                print(f"Error storing market analysis in Google Sheets: {e}")
         
         # Remove temporary date column if it exists
         if 'date' in data.columns:
