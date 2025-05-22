@@ -24,11 +24,9 @@ from enum import Enum
 import time  # For retry delays
 import json
 import uuid
-
 # Google Sheets integration
 import gspread
 from google.oauth2.service_account import Credentials
-
 # Try to import TensorFlow but don't fail if it's not available
 try:
     import tensorflow as tf
@@ -81,8 +79,51 @@ try:
     credentials = Credentials.from_service_account_file(credentials_path, scopes=scope)
     client = gspread.authorize(credentials)
     sheets_db = client.open(spreadsheet_name)
-    
     print(f"Connected to Google Sheets database: {spreadsheet_name}")
+    
+    # Check if all required worksheets exist
+    required_worksheets = ["trading_signals", "forecast_history", "market_analysis", "performance_tracking"]
+    existing_worksheets = [worksheet.title for worksheet in sheets_db.worksheets()]
+    
+    for worksheet_name in required_worksheets:
+        if worksheet_name not in existing_worksheets:
+            print(f"Creating missing worksheet: {worksheet_name}")
+            sheets_db.add_worksheet(title=worksheet_name, rows=1000, cols=20)
+            
+            # Add headers to newly created worksheets
+            if worksheet_name == "trading_signals":
+                header_row = [
+                    "signal_id", "symbol", "timeframe", "signal_type", "strength", 
+                    "entry_price", "stop_loss", "take_profit", "created_at"
+                ]
+                sheets_db.worksheet(worksheet_name).append_row(header_row)
+            elif worksheet_name == "forecast_history":
+                header_row = [
+                    "forecast_id", "symbol", "timeframe", "current_price", 
+                    "forecast_prices", "regime", "accuracy", "created_at"
+                ]
+                sheets_db.worksheet(worksheet_name).append_row(header_row)
+            elif worksheet_name == "market_analysis":
+                header_row = [
+                    "analysis_id", "symbol", "timeframe", "technical_indicators", 
+                    "sentiment_score", "market_regime", "openai_analysis", "created_at"
+                ]
+                sheets_db.worksheet(worksheet_name).append_row(header_row)
+            elif worksheet_name == "performance_tracking":
+                header_row = [
+                    "tracking_id", "symbol", "forecast_id", "actual_prices", 
+                    "forecast_error", "market_conditions", "created_at"
+                ]
+                sheets_db.worksheet(worksheet_name).append_row(header_row)
+    
+    # Test accessing each worksheet
+    for sheet_name in required_worksheets:
+        try:
+            worksheet = sheets_db.worksheet(sheet_name)
+            print(f"Successfully accessed worksheet: {sheet_name}")
+        except Exception as e:
+            print(f"Error accessing worksheet {sheet_name}: {e}")
+            
 except Exception as e:
     print(f"Error connecting to Google Sheets database: {e}")
     sheets_db = None
@@ -123,7 +164,7 @@ def fetch_data(symbol, timeframe, include_extended_hours=True):
     api_key = os.getenv("ALPHAVANTAGE_API_KEY")
     if not api_key:
         raise ValueError("Alpha Vantage API key not set in environment variable ALPHAVANTAGE_API_KEY")
-
+    
     # Check cache first - now includes extended hours in the key
     cache_key = f"{symbol.upper()}:{timeframe}:{include_extended_hours}"
     if cache_key in cache:
@@ -132,13 +173,14 @@ def fetch_data(symbol, timeframe, include_extended_hours=True):
         if age < 300:  # 5 minutes cache
             print(f"Using cached data for {symbol} {timeframe} (age: {age:.1f}s)")
             return data
-
+    
     intraday_options = ["5min", "30min", "2h", "4h"]
     if timeframe in intraday_options:
         base_interval = "60min" if timeframe in ["2h", "4h"] else timeframe
         function = "TIME_SERIES_INTRADAY"
         # Always use full output size for more historical data
         outputsize = "full"
+        
         params = {
             "function": function,
             "symbol": symbol,
@@ -148,23 +190,24 @@ def fetch_data(symbol, timeframe, include_extended_hours=True):
             "datatype": "json",
             "extended_hours": "true" if include_extended_hours else "false"
         }
+        
         expected_key = f"Time Series ({base_interval})"
         print(f"Fetching intraday data for {symbol} with interval {base_interval}, extended hours: {include_extended_hours}")
-
+        
         response = requests.get("https://www.alphavantage.co/query", params=params)
         if response.status_code != 200:
             raise ValueError(f"Alpha Vantage API request failed with status code {response.status_code}")
-
+        
         data_json = response.json()
         if expected_key not in data_json:
             print("Alpha Vantage API response:", data_json)
             raise ValueError(f"Alpha Vantage API response missing expected key: {expected_key}")
-
+            
         ts_data = data_json[expected_key]
         df = pd.DataFrame.from_dict(ts_data, orient="index")
         df.index = pd.to_datetime(df.index)
         df.sort_index(inplace=True)
-
+        
         # Rename columns to maintain consistent OHLC structure
         rename_dict = {
             "1. open": "Open",
@@ -172,20 +215,23 @@ def fetch_data(symbol, timeframe, include_extended_hours=True):
             "3. low": "Low",
             "4. close": "Close"
         }
+        
         # Add volume if it exists
         if "5. volume" in df.columns:
             rename_dict["5. volume"] = "Volume"
+        
         df = df.rename(columns=rename_dict)
-
+        
         for col in ["Open", "High", "Low", "Close"]:
             if col in df.columns:
                 df[col] = df[col].astype(float)
+        
         if "Volume" in df.columns:
             df["Volume"] = df["Volume"].astype(float)
-
+        
         if df.index.tz is None:
             df.index = df.index.tz_localize("UTC")
-
+        
         # For timeframe "5min", limit to most recent 250 data points (about 2 trading days)
         # For "30min", limit to 250 data points (about 1 week)
         # For "2h" and "4h", limit to 200 data points (about 2-4 weeks)
@@ -197,7 +243,7 @@ def fetch_data(symbol, timeframe, include_extended_hours=True):
             df = df.iloc[-min(200, len(df)):]
         elif timeframe == "4h":
             df = df.iloc[-min(200, len(df)):]
-
+            
         if timeframe in ["2h", "4h"]:
             freq = "2H" if timeframe == "2h" else "4H"
             # Resample with proper OHLC aggregation
@@ -211,22 +257,24 @@ def fetch_data(symbol, timeframe, include_extended_hours=True):
                 agg_dict["Volume"] = 'sum'
             df = df.resample(freq).agg(agg_dict).dropna()
             print(f"Resampled intraday data to {freq} frequency, resulting in {len(df)} rows.")
-
+        
         # Mark extended hours data if enabled
         if include_extended_hours:
             df = mark_extended_hours(df)
-
+        
         # Add symbol as name
         df.name = symbol.upper()
-
+        
         # Store in cache
         cache[cache_key] = (datetime.now(), df)
+        
         return df
     else:
         # Daily data: use TIME_SERIES_DAILY and retain OHLC.
         function = "TIME_SERIES_DAILY"
         # Always use full output size to get more historical data
         outputsize = "full"
+        
         params = {
             "function": function,
             "symbol": symbol,
@@ -234,23 +282,24 @@ def fetch_data(symbol, timeframe, include_extended_hours=True):
             "outputsize": outputsize,
             "datatype": "json"
         }
+        
         expected_key = "Time Series (Daily)"
         print(f"Fetching daily data for {symbol} with outputsize {outputsize}")
-
+        
         response = requests.get("https://www.alphavantage.co/query", params=params)
         if response.status_code != 200:
             raise ValueError(f"Alpha Vantage API request failed with status code {response.status_code}")
-
+        
         data_json = response.json()
         if expected_key not in data_json:
             print("Alpha Vantage API response:", data_json)
             raise ValueError("Alpha Vantage API response missing 'Time Series (Daily)'")
-
+            
         ts_data = data_json[expected_key]
         df = pd.DataFrame.from_dict(ts_data, orient="index")
         df.index = pd.to_datetime(df.index)
         df.sort_index(inplace=True)
-
+        
         # Rename columns to maintain consistent OHLC structure
         rename_dict = {
             "1. open": "Open",
@@ -258,17 +307,20 @@ def fetch_data(symbol, timeframe, include_extended_hours=True):
             "3. low": "Low",
             "4. close": "Close"
         }
+        
         # Add volume if it exists
         if "5. volume" in df.columns:
             rename_dict["5. volume"] = "Volume"
+        
         df = df.rename(columns=rename_dict)
-
+        
         for col in ["Open", "High", "Low", "Close"]:
             if col in df.columns:
                 df[col] = df[col].astype(float)
+        
         if "Volume" in df.columns:
             df["Volume"] = df["Volume"].astype(float)
-
+        
         # Get more historical data for each timeframe
         now = datetime.now()
         if timeframe == "1day":
@@ -289,21 +341,23 @@ def fetch_data(symbol, timeframe, include_extended_hours=True):
         else:
             # Default to 90 days
             start_date = now - timedelta(days=90)
-
+        
         df = df[df.index >= start_date]
+        
         if df.empty:
             raise ValueError(f"No data found for symbol: {symbol} in the specified timeframe")
-
+        
         if df.index.tz is None:
             df.index = df.index.tz_localize("UTC")
-
+        
         # Add symbol as name
         df.name = symbol.upper()
-
+        
         # Daily data doesn't include extended hours, so no session marking
-
+        
         # Store in cache
         cache[cache_key] = (datetime.now(), df)
+        
         return df
 
 def mark_extended_hours(data):
@@ -316,34 +370,34 @@ def mark_extended_hours(data):
     """
     df = data.copy()
     df['session'] = 'regular'
-
+    
     # Convert index to datetime if it's not already
     if not isinstance(df.index, pd.DatetimeIndex):
         df.index = pd.to_datetime(df.index)
-
+    
     # Ensure timezone info is present
     if df.index.tz is None:
         df.index = df.index.tz_localize('America/New_York')
     elif str(df.index.tz) != 'America/New_York':
         df.index = df.index.tz_convert('America/New_York')
-
+    
     # Extract time info
     times = df.index.time
-
+    
     # Define market hours
     pre_market_start = pd.to_datetime('04:00:00').time()
     market_open = pd.to_datetime('09:30:00').time()
     market_close = pd.to_datetime('16:00:00').time()
     after_hours_end = pd.to_datetime('20:00:00').time()
-
+    
     # Mark pre-market (4:00 AM to 9:30 AM ET)
     pre_market_mask = [(t >= pre_market_start and t < market_open) for t in times]
     df.loc[pre_market_mask, 'session'] = 'pre-market'
-
+    
     # Mark after-hours (4:00 PM to 8:00 PM ET)
     after_hours_mask = [(t >= market_close and t <= after_hours_end) for t in times]
     df.loc[after_hours_mask, 'session'] = 'after-hours'
-
+    
     return df
 
 # ---------------------------
@@ -364,7 +418,7 @@ def fetch_news(symbol, max_items=5):
         if not news_api_key:
             print("Warning: NewsAPI key not set, using placeholder news")
             return get_placeholder_news(symbol)
-
+        
         # Prepare the query - search for both the symbol and company name if possible
         company_names = {
             "AAPL": "Apple",
@@ -385,12 +439,12 @@ def fetch_news(symbol, max_items=5):
             "JNJ": "Johnson & Johnson"
             # Add more common symbols and company names as needed
         }
-
+        
         # Construct query using both symbol and company name if available
         query = symbol
         if symbol.upper() in company_names:
             query = f"{symbol} OR {company_names[symbol.upper()]}"
-
+        
         # Build API request
         url = "https://newsapi.org/v2/everything"
         params = {
@@ -400,22 +454,22 @@ def fetch_news(symbol, max_items=5):
             "sortBy": "publishedAt",
             "pageSize": max_items
         }
-
+        
         # Set timeout to avoid blocking
         timeout = 5  # seconds
         response = requests.get(url, params=params, timeout=timeout)
-
+        
         if response.status_code != 200:
             print(f"NewsAPI error: Status {response.status_code}")
             return get_placeholder_news(symbol)
-
+        
         data = response.json()
         if data.get("status") != "ok" or "articles" not in data:
             print(f"NewsAPI error: {data.get('message', 'Unknown error')}")
             return get_placeholder_news(symbol)
-
+        
         articles = data["articles"]
-
+        
         # Format the response
         news = []
         for article in articles:
@@ -425,7 +479,7 @@ def fetch_news(symbol, max_items=5):
                 summary = content[:297] + "..."
             else:
                 summary = content
-
+            
             news.append({
                 "title": article.get("title", ""),
                 "source": {"name": article.get("source", {}).get("name", "Unknown Source")},
@@ -433,7 +487,7 @@ def fetch_news(symbol, max_items=5):
                 "url": article.get("url", ""),
                 "publishedAt": article.get("publishedAt", "")
             })
-
+        
         return news
     except Exception as e:
         print(f"Error fetching news: {e}")
@@ -470,45 +524,45 @@ def get_placeholder_news(symbol):
 def calculate_technical_indicators(data):
     """Calculate key technical indicators for forecasting enhancement."""
     df = data.copy()
-
+    
     # Moving Averages
     df['SMA_20'] = df['Close'].rolling(window=min(20, len(df))).mean()
     df['SMA_50'] = df['Close'].rolling(window=min(50, len(df))).mean()
     df['EMA_12'] = df['Close'].ewm(span=min(12, len(df)), adjust=False).mean()
     df['EMA_26'] = df['Close'].ewm(span=min(26, len(df)), adjust=False).mean()
-
+    
     # MACD
     df['MACD'] = df['EMA_12'] - df['EMA_26']
     df['MACD_Signal'] = df['MACD'].ewm(span=min(9, len(df)), adjust=False).mean()
     df['MACD_Hist'] = df['MACD'] - df['MACD_Signal']
-
+    
     # RSI (Relative Strength Index)
     delta = df['Close'].diff()
     gain = delta.where(delta > 0, 0)
     loss = -delta.where(delta < 0, 0)
     avg_gain = gain.rolling(window=min(14, len(df))).mean()
     avg_loss = loss.rolling(window=min(14, len(df))).mean()
-
+    
     # Handle division by zero
     avg_loss = avg_loss.replace(0, np.nan)
     rs = avg_gain / avg_loss
     rs = rs.replace(np.nan, 0)
     df['RSI'] = 100 - (100 / (1 + rs))
-
+    
     # Bollinger Bands
     window = min(20, len(df))
     df['BB_Middle'] = df['Close'].rolling(window=window).mean()
     std_dev = df['Close'].rolling(window=window).std()
     df['BB_Upper'] = df['BB_Middle'] + (std_dev * 2)
     df['BB_Lower'] = df['BB_Middle'] - (std_dev * 2)
-
+    
     # Volatility Indicators
     df['ATR'] = calculate_atr(df, min(14, len(df)))  # Average True Range
-
+    
     # Volume Indicators (if volume data is available)
     if 'Volume' in df.columns:
         df['OBV'] = calculate_obv(df)  # On-Balance Volume
-
+    
     return df
 
 def calculate_atr(data, period=14):
@@ -517,21 +571,21 @@ def calculate_atr(data, period=14):
     df['H-L'] = df['High'] - df['Low']
     df['H-PC'] = abs(df['High'] - df['Close'].shift(1))
     df['L-PC'] = abs(df['Low'] - df['Close'].shift(1))
-
+    
     # Replace NaN with 0
     df['H-PC'] = df['H-PC'].fillna(0)
     df['L-PC'] = df['L-PC'].fillna(0)
-
+    
     df['TR'] = df[['H-L', 'H-PC', 'L-PC']].max(axis=1)
     df['ATR'] = df['TR'].rolling(window=min(period, len(df))).mean()
-
+    
     return df['ATR']
 
 def calculate_obv(data):
     """Calculate On-Balance Volume."""
     if 'Volume' not in data.columns:
         return pd.Series(0, index=data.index)
-
+    
     obv = [0]
     for i in range(1, len(data)):
         if data['Close'].iloc[i] > data['Close'].iloc[i-1]:
@@ -540,7 +594,7 @@ def calculate_obv(data):
             obv.append(obv[-1] - data['Volume'].iloc[i])
         else:
             obv.append(obv[-1])
-
+    
     return pd.Series(obv, index=data.index)
 
 # ---------------------------
@@ -558,13 +612,13 @@ def extract_key_indicators(data):
         # Ensure we have the latest data point
         if len(data) == 0:
             return None
-
+        
         latest = data.iloc[-1]
         result = {}
-
+        
         # Basic price metrics
         close_price = latest['Close']
-
+        
         # Extract key indicators if they exist
         if 'RSI' in latest and not pd.isna(latest['RSI']):
             result['RSI'] = float(latest['RSI'])
@@ -575,24 +629,26 @@ def extract_key_indicators(data):
                 result['RSI_signal'] = 'overbought'
             else:
                 result['RSI_signal'] = 'neutral'
-
+        
         # MACD
         if 'MACD' in latest and 'MACD_Signal' in latest:
             if not pd.isna(latest['MACD']) and not pd.isna(latest['MACD_Signal']):
                 result['MACD'] = float(latest['MACD'])
                 result['MACD_Signal'] = float(latest['MACD_Signal'])
                 result['MACD_Hist'] = float(latest['MACD_Hist']) if 'MACD_Hist' in latest else float(latest['MACD'] - latest['MACD_Signal'])
+                
                 # Add MACD interpretation
                 if latest['MACD'] > latest['MACD_Signal']:
                     result['MACD_signal'] = 'bullish'
                 else:
                     result['MACD_signal'] = 'bearish'
-
+        
         # Moving Averages
         if 'SMA_20' in latest and 'SMA_50' in latest:
             if not pd.isna(latest['SMA_20']) and not pd.isna(latest['SMA_50']):
                 result['SMA_20'] = float(latest['SMA_20'])
                 result['SMA_50'] = float(latest['SMA_50'])
+                
                 # Determine trend based on MAs
                 if close_price > latest['SMA_20'] > latest['SMA_50']:
                     result['trend'] = 'strong_uptrend'
@@ -604,18 +660,20 @@ def extract_key_indicators(data):
                     result['trend'] = 'potential_downtrend'
                 else:
                     result['trend'] = 'neutral'
-
+        
         # Bollinger Bands
         if all(band in latest for band in ['BB_Upper', 'BB_Middle', 'BB_Lower']):
             if not any(pd.isna(latest[band]) for band in ['BB_Upper', 'BB_Middle', 'BB_Lower']):
                 result['BB_Upper'] = float(latest['BB_Upper'])
                 result['BB_Middle'] = float(latest['BB_Middle'])
                 result['BB_Lower'] = float(latest['BB_Lower'])
+                
                 # Calculate % bandwidth and %B
                 bandwidth = (latest['BB_Upper'] - latest['BB_Lower']) / latest['BB_Middle'] * 100
                 percent_b = (close_price - latest['BB_Lower']) / (latest['BB_Upper'] - latest['BB_Lower']) if (latest['BB_Upper'] - latest['BB_Lower']) != 0 else 0.5
                 result['BB_Bandwidth'] = float(bandwidth)
                 result['BB_PercentB'] = float(percent_b)
+                
                 # BB interpretation
                 if close_price > latest['BB_Upper']:
                     result['BB_signal'] = 'overbought'
@@ -623,27 +681,28 @@ def extract_key_indicators(data):
                     result['BB_signal'] = 'oversold'
                 else:
                     result['BB_signal'] = 'neutral'
-
+        
         # Volatility (ATR)
         if 'ATR' in latest and not pd.isna(latest['ATR']):
             result['ATR'] = float(latest['ATR'])
             # Express ATR as percentage of price
             result['ATR_percent'] = float(latest['ATR'] / close_price * 100)
-
+        
         # Volume indicators if available
         if 'Volume' in latest and not pd.isna(latest['Volume']):
             result['Volume'] = float(latest['Volume'])
+            
             # If we have enough data, calculate volume trends
             if len(data) >= 20 and 'Volume' in data.columns:
                 avg_volume = data['Volume'].rolling(window=20).mean().iloc[-1]
                 result['Volume_avg_20d'] = float(avg_volume)
                 result['Volume_ratio'] = float(latest['Volume'] / avg_volume) if avg_volume > 0 else 1.0
-
+        
         # Calculate momentum
         if len(data) >= 14:
             momentum_14d = (close_price / data['Close'].iloc[-14] - 1) * 100
             result['Momentum_14d'] = float(momentum_14d)
-
+        
         return result
     except Exception as e:
         print(f"Error extracting key indicators: {e}")
@@ -666,7 +725,7 @@ def generate_chart(data, symbol, forecast=None, timeframe="1day"):
     try:
         # Create figure and subplots
         fig, ax = plt.subplots(figsize=(12, 6), facecolor='#1a1a1a')
-
+        
         # Set dark theme
         ax.set_facecolor('#1a1a1a')
         ax.spines['bottom'].set_color('#666666')
@@ -678,7 +737,7 @@ def generate_chart(data, symbol, forecast=None, timeframe="1day"):
         ax.yaxis.label.set_color('#cccccc')
         ax.xaxis.label.set_color('#cccccc')
         ax.grid(alpha=0.15)
-
+        
         # Format dates based on timeframe
         if timeframe in ["5min", "30min", "2h", "4h"]:
             date_format = '%H:%M'
@@ -686,7 +745,7 @@ def generate_chart(data, symbol, forecast=None, timeframe="1day"):
             date_format = '%m/%d'
         else:
             date_format = '%b %Y'
-
+        
         # Plot historical data
         has_extended_hours = 'session' in data.columns
         if has_extended_hours:
@@ -694,7 +753,7 @@ def generate_chart(data, symbol, forecast=None, timeframe="1day"):
             regular_data = data[data['session'] == 'regular']
             pre_market_data = data[data['session'] == 'pre-market']
             after_hours_data = data[data['session'] == 'after-hours']
-
+            
             # Plot each session with different colors
             if not regular_data.empty:
                 ax.plot(regular_data.index, regular_data['Close'], color='#4da6ff', linewidth=2, label='Regular Hours')
@@ -705,32 +764,32 @@ def generate_chart(data, symbol, forecast=None, timeframe="1day"):
         else:
             # Plot all data with a single color
             ax.plot(data.index, data['Close'], color='#4da6ff', linewidth=2, label='Historical')
-
+        
         # Add vertical line to separate historical from forecast
         if forecast and len(forecast) > 0:
             last_historical_date = data.index[-1]
             ax.axvline(x=last_historical_date, color='#ffffff', linestyle='--', alpha=0.5)
-
-        # Plot forecast
-        # Calculate forecast dates
-        if timeframe.endswith("min"):
-            minutes = int(timeframe.replace("min", ""))
-            forecast_dates = [data.index[-1] + timedelta(minutes=minutes * (i+1)) for i in range(len(forecast))]
-        elif timeframe.endswith("h"):
-            hours = int(timeframe.replace("h", ""))
-            forecast_dates = [data.index[-1] + timedelta(hours=hours * (i+1)) for i in range(len(forecast))]
-        else:
-            forecast_dates = pd.date_range(start=data.index[-1] + timedelta(days=1), periods=len(forecast), freq='B')
-
-        # Plot forecast line
-        ax.plot(forecast_dates, forecast, color='#FFD700', linewidth=2, linestyle='--', marker='o', label='Forecast')
-
-        # Shade the forecast region
-        ax.fill_between(forecast_dates, 
-                        [min(data['Close'].min(), min(forecast)) * 0.98] * len(forecast_dates), 
-                        [max(data['Close'].max(), max(forecast)) * 1.02] * len(forecast_dates), 
-                        color='#FFD700', alpha=0.05)
-
+            
+            # Plot forecast
+            # Calculate forecast dates
+            if timeframe.endswith("min"):
+                minutes = int(timeframe.replace("min", ""))
+                forecast_dates = [data.index[-1] + timedelta(minutes=minutes * (i+1)) for i in range(len(forecast))]
+            elif timeframe.endswith("h"):
+                hours = int(timeframe.replace("h", ""))
+                forecast_dates = [data.index[-1] + timedelta(hours=hours * (i+1)) for i in range(len(forecast))]
+            else:
+                forecast_dates = pd.date_range(start=data.index[-1] + timedelta(days=1), periods=len(forecast), freq='B')
+            
+            # Plot forecast line
+            ax.plot(forecast_dates, forecast, color='#FFD700', linewidth=2, linestyle='--', marker='o', label='Forecast')
+            
+            # Shade the forecast region
+            ax.fill_between(forecast_dates, 
+                [min(data['Close'].min(), min(forecast)) * 0.98] * len(forecast_dates), 
+                [max(data['Close'].max(), max(forecast)) * 1.02] * len(forecast_dates), 
+                color='#FFD700', alpha=0.05)
+        
         # Add title and labels
         timeframe_display = timeframe
         if timeframe == "1day": timeframe_display = "Daily"
@@ -742,33 +801,33 @@ def generate_chart(data, symbol, forecast=None, timeframe="1day"):
         elif timeframe == "30min": timeframe_display = "30 Minute"
         elif timeframe == "2h": timeframe_display = "2 Hour"
         elif timeframe == "4h": timeframe_display = "4 Hour"
-
+        
         plt.title(f"{symbol} {timeframe_display} Chart", color='white', fontsize=16)
         plt.xlabel('Date', color='#cccccc')
         plt.ylabel('Price ($)', color='#cccccc')
-
+        
         # Format x-axis dates
         fig.autofmt_xdate()
-
+        
         # Add legend with dark theme
         if has_extended_hours or (forecast and len(forecast) > 0):
             legend = plt.legend(frameon=True, facecolor='#1a1a1a', edgecolor='#666666')
             for text in legend.get_texts():
                 text.set_color('#cccccc')
-
+        
         # Save chart to memory
         buf = io.BytesIO()
         plt.tight_layout()
         plt.savefig(buf, format='png', dpi=100, facecolor='#1a1a1a')
         buf.seek(0)
-
+        
         # Convert to base64 for embedding in HTML
         chart_data = base64.b64encode(buf.getvalue()).decode('utf-8')
         data_url = f"data:image/png;base64,{chart_data}"
-
+        
         # Close the plot to free memory
         plt.close(fig)
-
+        
         return data_url
     except Exception as e:
         print(f"Error generating chart: {e}")
@@ -787,12 +846,14 @@ def linear_regression_forecast(data, periods=5, degree=2):
         y = data["Close"].values
         coeffs = np.polyfit(x, y, degree)
         poly = np.poly1d(coeffs)
+        
         x_future = np.arange(len(data), len(data) + periods)
         forecast = poly(x_future)
-
+        
         # Force first forecast point to equal last actual close
         forecast[0] = y[-1]
         forecast = forecast.tolist()
+        
         print(f"Polynomial regression forecast (degree={degree}): {forecast}")
         return forecast
     except Exception as e:
@@ -844,11 +905,11 @@ def mean_reversion_forecast(data, periods=5):
         mean_price = data["Close"].rolling(window=window).mean().iloc[-1]
         current_price = data["Close"].iloc[-1]
         deviation = current_price - mean_price
-
+        
         # Calculate the mean reversion strength based on how far price is from mean
         std_dev = data["Close"].rolling(window=window).std().iloc[-1]
         reversion_speed = min(0.3, abs(deviation) / (2 * std_dev)) if std_dev > 0 else 0.1
-
+        
         # Generate a reverting forecast
         forecast = []
         last_price = current_price
@@ -865,7 +926,7 @@ def mean_reversion_forecast(data, periods=5):
             # Update for next iteration
             forecast.append(float(new_price))
             last_price = new_price
-
+        
         print(f"Mean reversion forecast: {forecast}")
         return forecast
     except Exception as e:
@@ -912,7 +973,6 @@ def detect_market_regime(data):
             # Strong uptrend
             if close > sma_20 > sma_50 and price_change_20d > 3:
                 return 'trending_up'
-            
             # Strong downtrend
             elif close < sma_20 < sma_50 and price_change_20d < -3:
                 return 'trending_down'
@@ -946,13 +1006,13 @@ def enhanced_forecast(data, periods=5, timeframe="1day"):
     try:
         # Extract the closing prices
         close_prices = data["Close"].values
-
+        
         # Determine if this is intraday or daily data
         is_intraday = timeframe.endswith('min') or timeframe.endswith('h')
-
+        
         # Check if we have extended hours data
         has_extended_hours = 'session' in data.columns
-
+        
         # 1. Get base forecast (trend component)
         if is_intraday:
             # Use polynomial regression for intraday
@@ -965,19 +1025,19 @@ def enhanced_forecast(data, periods=5, timeframe="1day"):
             except:
                 # Fall back to linear regression if ARIMA fails
                 base_forecast = linear_regression_forecast(data, periods, degree=1)
-
+        
         # 2. Calculate volatility metrics from historical data
         # - Recent volatility (standard deviation of returns)
         returns = np.diff(close_prices) / close_prices[:-1]
         recent_volatility = np.std(returns[-min(30, len(returns)):])
-
+        
         # - Average daily price movement as percentage
         avg_daily_movement = np.mean(np.abs(returns[-min(30, len(returns)):]))
-
+        
         # - Calculate how often prices change direction
         direction_changes = np.sum(np.diff(np.signbit(np.diff(close_prices))))
         direction_change_frequency = direction_changes / (len(close_prices) - 2) if len(close_prices) > 2 else 0.3
-
+        
         # If we have extended hours data, adjust volatility based on extended hours patterns
         if has_extended_hours:
             try:
@@ -985,50 +1045,51 @@ def enhanced_forecast(data, periods=5, timeframe="1day"):
                 regular_data = data[data['session'] == 'regular']
                 pre_market_data = data[data['session'] == 'pre-market']
                 after_hours_data = data[data['session'] == 'after-hours']
-
+                
                 # Calculate volatility for each session type if we have enough data
                 if len(regular_data) > 5:
                     regular_returns = regular_data['Close'].pct_change().dropna()
                     regular_volatility = np.std(regular_returns)
                 else:
                     regular_volatility = recent_volatility
-
+                
                 if len(pre_market_data) > 5:
                     pre_market_returns = pre_market_data['Close'].pct_change().dropna()
                     pre_market_volatility = np.std(pre_market_returns)
+                    
                     # Adjust overall volatility based on pre-market activity
                     if pre_market_volatility > regular_volatility * 1.2:
                         # If pre-market is more volatile, slightly increase forecast volatility
                         recent_volatility *= 1.1
-
+                
                 if len(after_hours_data) > 5:
                     after_hours_returns = after_hours_data['Close'].pct_change().dropna()
                     after_hours_volatility = np.std(after_hours_returns)
+                    
                     # Adjust overall volatility based on after-hours activity
                     if after_hours_volatility > regular_volatility * 1.2:
                         # If after-hours is more volatile, slightly increase forecast volatility
                         recent_volatility *= 1.1
-
             except Exception as e:
                 print(f"Error analyzing extended hours volatility: {e}")
-
+        
         # 3. Add realistic movement patterns
         enhanced_forecast = []
         last_price = close_prices[-1]
         last_direction = 1  # Start with upward movement
-
+        
         for i in range(periods):
             # Get the trend component
             trend = base_forecast[i]
-
+            
             # Determine if we should change direction based on historical frequency
             if np.random.random() < direction_change_frequency:
                 last_direction *= -1
-
+            
             # Generate a random component based on historical volatility
             # More volatile stocks will have larger random components
             random_component = last_price * recent_volatility * np.random.normal(0, 1.5)
-
+            
             # Combine trend and random component with direction bias
             if i == 0:
                 # First forecast point should be closer to the last actual price
@@ -1036,34 +1097,34 @@ def enhanced_forecast(data, periods=5, timeframe="1day"):
             else:
                 # Later points can deviate more
                 weight_random = 0.6
-
+            
             # Calculate the forecast with random component
             new_price = trend + (random_component * weight_random * last_direction)
-
+            
             # Ensure some minimum movement
             min_movement = last_price * avg_daily_movement * 0.5
             if abs(new_price - last_price) < min_movement:
                 new_price = last_price + (min_movement * last_direction)
-
+            
             # Add some persistence to avoid unrealistic jumps
             if i > 0:
                 # Pull slightly toward previous forecast point
                 new_price = 0.7 * new_price + 0.3 * enhanced_forecast[-1]
-
+            
             # Ensure the forecast doesn't go negative
             new_price = max(new_price, 0.01 * last_price)
             
             enhanced_forecast.append(float(new_price))
             last_price = new_price
-
+        
         # 4. Ensure the forecast maintains overall trend direction from the base forecast
         trend_direction = 1 if base_forecast[-1] > base_forecast[0] else -1
         actual_direction = 1 if enhanced_forecast[-1] > enhanced_forecast[0] else -1
-
+        
         if trend_direction != actual_direction:
             # Adjust the last point to maintain the overall trend direction
             enhanced_forecast[-1] = enhanced_forecast[0] + abs(enhanced_forecast[-1] - enhanced_forecast[0]) * trend_direction
-
+        
         print(f"Enhanced forecast: {enhanced_forecast}")
         return enhanced_forecast
     except Exception as e:
@@ -1087,7 +1148,7 @@ def create_extended_hours_features(df):
     
     if 'session' not in result.columns:
         return result
-        
+    
     # Calculate pre-market to previous close change
     result['pre_market_change'] = 0.0
     result['after_hours_change'] = 0.0
@@ -1131,20 +1192,20 @@ def create_extended_hours_features(df):
                 if regular_close > 0:
                     after_hours_change = (after_hours_close - regular_close) / regular_close
                     result.loc[date_mask, 'after_hours_change'] = after_hours_change
-        
-        # Create rolling averages for these features
-        result['pre_market_change_5d'] = result['pre_market_change'].rolling(5).mean()
-        result['after_hours_change_5d'] = result['after_hours_change'].rolling(5).mean()
-        
-        # Fill NA values with 0
-        for col in ['pre_market_change', 'after_hours_change', 
-                   'pre_market_change_5d', 'after_hours_change_5d']:
-            result[col] = result[col].fillna(0)
-        
-        # Remove the temporary date column
-        if 'date' in result.columns:
-            result.drop('date', axis=1, inplace=True)
-            
+    
+    # Create rolling averages for these features
+    result['pre_market_change_5d'] = result['pre_market_change'].rolling(5).mean()
+    result['after_hours_change_5d'] = result['after_hours_change'].rolling(5).mean()
+    
+    # Fill NA values with 0
+    for col in ['pre_market_change', 'after_hours_change', 
+                'pre_market_change_5d', 'after_hours_change_5d']:
+        result[col] = result[col].fillna(0)
+    
+    # Remove the temporary date column
+    if 'date' in result.columns:
+        result.drop('date', axis=1, inplace=True)
+    
     return result
 
 def adjust_forecast_volatility(forecast, data):
@@ -1204,7 +1265,7 @@ def adjust_forecast_volatility(forecast, data):
                 vol *= 1.2
         else:
             vol = recent_volatility
-            
+        
         random_component = forecast[i-1] * vol * np.random.normal(0, 0.8)
         
         # Add autocorrelation - volatility tends to cluster
@@ -1212,11 +1273,170 @@ def adjust_forecast_volatility(forecast, data):
             # If previous point was up, slightly higher chance of being up again
             prev_direction = 1 if adjusted_forecast[i-1] > adjusted_forecast[i-2] else -1
             random_component = random_component * 0.8 + prev_direction * abs(random_component) * 0.2
-            
+        
         new_price = forecast[i-1] + trend_component + random_component
         adjusted_forecast.append(float(new_price))
     
     return adjusted_forecast
+
+def create_features(df, target_col='Close', window=10):
+    """
+    Create features for machine learning models.
+    Now includes extended hours features if available.
+    Args:
+        df (pd.DataFrame): Input DataFrame
+        target_col (str): Target column for prediction
+        window (int): Window size for rolling features
+    Returns:
+        pd.DataFrame: DataFrame with features
+    """
+    window = min(window, len(df) // 3)
+    if window < 2:
+        return pd.DataFrame(index=df.index)
+    
+    X = pd.DataFrame(index=df.index)
+    
+    # Lagged prices
+    for i in range(1, window + 1):
+        X[f'lag_{i}'] = df[target_col].shift(i)
+    
+    # Price changes
+    X['return_1d'] = df[target_col].pct_change(1)
+    X['return_5d'] = df[target_col].pct_change(window // 2)
+    
+    # Rolling statistics
+    X['rolling_mean'] = df[target_col].rolling(window=window).mean()
+    X['rolling_std'] = df[target_col].rolling(window=window).std()
+    
+    # Technical indicators if available
+    for col in ['RSI', 'MACD', 'ATR', 'SMA_20', 'BB_Upper', 'BB_Lower']:
+        if col in df.columns:
+            X[col] = df[col]
+    
+    # Extended hours features if available
+    for col in ['pre_market_change', 'after_hours_change', 
+                'pre_market_change_5d', 'after_hours_change_5d']:
+        if col in df.columns:
+            X[col] = df[col]
+    
+    # Session indicator variables if available
+    if 'session' in df.columns:
+        X['is_pre_market'] = (df['session'] == 'pre-market').astype(int)
+        X['is_after_hours'] = (df['session'] == 'after-hours').astype(int)
+    
+    # Fill NA values
+    X = X.fillna(method='bfill').fillna(method='ffill').fillna(0)
+    
+    return X
+
+def train_linear_model(X, y):
+    """Train a linear regression model."""
+    try:
+        model = LinearRegression()
+        
+        # Drop rows with NaN values
+        X_clean = X.dropna()
+        y_clean = y.loc[X_clean.index]
+        
+        if len(X_clean) < 10:  # Not enough data
+            return None
+        
+        model.fit(X_clean, y_clean)
+        return model
+    except Exception as e:
+        print(f"Error training linear model: {e}")
+        return None
+
+def train_ridge_model(X, y):
+    """Train a ridge regression model."""
+    try:
+        model = Ridge(alpha=1.0)
+        
+        # Drop rows with NaN values
+        X_clean = X.dropna()
+        y_clean = y.loc[X_clean.index]
+        
+        if len(X_clean) < 10:  # Not enough data
+            return None
+        
+        model.fit(X_clean, y_clean)
+        return model
+    except Exception as e:
+        print(f"Error training ridge model: {e}")
+        return None
+
+def train_gb_model(X, y):
+    """Train a gradient boosting regressor model."""
+    try:
+        model = GradientBoostingRegressor(n_estimators=50, learning_rate=0.1, max_depth=3, random_state=42)
+        
+        # Drop rows with NaN values
+        X_clean = X.dropna()
+        y_clean = y.loc[X_clean.index]
+        
+        if len(X_clean) < 10:  # Not enough data
+            return None
+        
+        model.fit(X_clean, y_clean)
+        return model
+    except Exception as e:
+        print(f"Error training gradient boosting model: {e}")
+        return None
+
+def train_svm_model(X, y):
+    """Train an SVR model."""
+    try:
+        # Scale the data
+        scaler = StandardScaler()
+        
+        # Drop rows with NaN values
+        X_clean = X.dropna()
+        y_clean = y.loc[X_clean.index]
+        
+        if len(X_clean) < 10:  # Not enough data
+            return None
+        
+        X_scaled = scaler.fit_transform(X_clean)
+        model = SVR(kernel='rbf', C=100, gamma=0.1)
+        model.fit(X_scaled, y_clean)
+        
+        # Return model and scaler as a tuple
+        return (model, scaler)
+    except Exception as e:
+        print(f"Error training SVM model: {e}")
+        return None
+
+def generate_model_predictions(model, features, data, periods):
+    """Generate predictions from a trained model."""
+    if model is None:
+        return [data["Close"].iloc[-1]] * periods
+    
+    try:
+        predictions = []
+        current_features = features.iloc[-1:].copy()
+        
+        # For SVR, we need to scale the data
+        if isinstance(model, tuple) and len(model) == 2:
+            svm_model, scaler = model
+            current_features_scaled = scaler.transform(current_features)
+            last_pred = svm_model.predict(current_features_scaled)[0]
+        else:
+            last_pred = model.predict(current_features)[0]
+        
+        predictions.append(float(last_pred))
+        
+        # For simplicity, assume the features remain relatively constant
+        # In a more advanced implementation, you would update the features based on each prediction
+        for _ in range(1, periods):
+            # Add some random variation
+            variation = np.random.normal(0, 0.01) * predictions[-1]
+            next_pred = predictions[-1] * (1 + variation)
+            predictions.append(float(next_pred))
+        
+        return predictions
+    except Exception as e:
+        print(f"Error generating model predictions: {e}")
+        return [data["Close"].iloc[-1]] * periods
 
 def improved_ensemble_forecast(data, periods=5, timeframe="1day"):
     """
@@ -1237,12 +1457,14 @@ def improved_ensemble_forecast(data, periods=5, timeframe="1day"):
         if timeframe == "4h":
             # Use polynomial regression with some volatility adjustment
             base_forecast = linear_regression_forecast(data, periods, degree=2)
+            
             # Get the last few days' volatility
             recent_volatility = data['Close'].pct_change().std() * 2.0
             
             # Adjust the forecast with some reasonable volatility
             last_price = data['Close'].iloc[-1]
             volatility_adjusted = []
+            
             for i, price in enumerate(base_forecast):
                 # Keep first point close to last actual price
                 if i == 0:
@@ -1252,9 +1474,11 @@ def improved_ensemble_forecast(data, periods=5, timeframe="1day"):
                     # Ensure we don't get extreme values
                     max_deviation = last_price * recent_volatility * 0.1 * (i + 1)
                     deviation = np.random.normal(0, max_deviation)
+                    
                     # Ensure we follow the overall trend
                     trend_component = price - base_forecast[i-1]
                     new_price = volatility_adjusted[i-1] + trend_component + deviation
+                    
                     # Limit the deviation to a reasonable range
                     max_change = last_price * 0.05 * (i + 1)
                     if abs(new_price - last_price) > max_change:
@@ -1285,10 +1509,10 @@ def improved_ensemble_forecast(data, periods=5, timeframe="1day"):
         # Add extended hours features if available
         if has_extended_hours:
             for col in ['pre_market_change', 'after_hours_change', 
-                       'pre_market_change_5d', 'after_hours_change_5d']:
+                        'pre_market_change_5d', 'after_hours_change_5d']:
                 if col in df.columns:
                     features[col] = df[col]
-
+        
         # Train multiple models
         models = {
             "linear": train_linear_model(features, df['Close']),
@@ -1324,7 +1548,7 @@ def improved_ensemble_forecast(data, periods=5, timeframe="1day"):
             model_errors["poly_reg"] = 10
         else:
             model_errors["arima"] = 12
-            
+        
         # Enhanced forecast typically performs well
         model_errors["enhanced"] = 8
         
@@ -1363,6 +1587,7 @@ def improved_ensemble_forecast(data, periods=5, timeframe="1day"):
         for i in range(periods):
             weighted_sum = 0
             weight_total = 0
+            
             for model_name, prediction in predictions.items():
                 if model_name in weights and i < len(prediction):
                     weighted_sum += prediction[i] * weights.get(model_name, 0)
@@ -1375,8 +1600,8 @@ def improved_ensemble_forecast(data, periods=5, timeframe="1day"):
             max_change_percent = 15
             max_price = last_price * (1 + max_change_percent/100)
             min_price = last_price * (1 - max_change_percent/100)
-            ensemble_val = max(min_price, min(max_price, ensemble_val))
             
+            ensemble_val = max(min_price, min(max_price, ensemble_val))
             ensemble_forecast.append(float(ensemble_val))
         
         print(f"Final ensemble forecast: {ensemble_forecast}")
@@ -1415,7 +1640,7 @@ def regime_aware_forecast(data, periods=5, timeframe="1day"):
                     base_forecast = arima_prediction(arima_model)
                 except:
                     base_forecast = linear_regression_forecast(data, periods, degree=1)
-                    
+            
             # Enhance trend slightly
             enhanced_trend = []
             last_close = data['Close'].iloc[-1]
@@ -1424,9 +1649,9 @@ def regime_aware_forecast(data, periods=5, timeframe="1day"):
             for i in range(periods):
                 # Accentuate the trend a bit
                 enhanced_trend.append(last_close * (1 + trend_rate * (i + 1) * 1.1))
-                
-            return adjust_forecast_volatility(enhanced_trend, data)
             
+            return adjust_forecast_volatility(enhanced_trend, data)
+        
         elif regime == "trending_down":
             # Similar to trending_up but with downward bias
             if timeframe.endswith('min') or timeframe.endswith('h'):
@@ -1437,7 +1662,7 @@ def regime_aware_forecast(data, periods=5, timeframe="1day"):
                     base_forecast = arima_prediction(arima_model)
                 except:
                     base_forecast = linear_regression_forecast(data, periods, degree=1)
-                    
+            
             # Enhance downtrend slightly
             enhanced_trend = []
             last_close = data['Close'].iloc[-1]
@@ -1446,13 +1671,13 @@ def regime_aware_forecast(data, periods=5, timeframe="1day"):
             for i in range(periods):
                 # Accentuate the downtrend a bit
                 enhanced_trend.append(last_close * (1 + trend_rate * (i + 1) * 1.1))
-                
-            return adjust_forecast_volatility(enhanced_trend, data)
             
+            return adjust_forecast_volatility(enhanced_trend, data)
+        
         elif regime == "mean_reverting":
             # Use mean reversion forecast
             return mean_reversion_forecast(data, periods)
-            
+        
         elif regime == "volatile":
             # Use ensemble with higher volatility
             base_forecast = enhanced_forecast(data, periods, timeframe)
@@ -1466,13 +1691,12 @@ def regime_aware_forecast(data, periods=5, timeframe="1day"):
                 random_component = volatile_forecast[i-1] * volatility * np.random.normal(0, 1.2)
                 new_price = base_forecast[i] + random_component
                 volatile_forecast.append(new_price)
-                
-            return volatile_forecast
             
+            return volatile_forecast
+        
         else:  # unknown regime
             # Use the standard ensemble forecast
             return improved_ensemble_forecast(data, periods, timeframe)
-            
     except Exception as e:
         print(f"Error in regime-aware forecast: {e}")
         return enhanced_forecast(data, periods, timeframe)
@@ -1491,6 +1715,7 @@ def market_aware_forecast(data, periods=5, timeframe="1day", symbol="AAPL"):
     try:
         # Get baseline forecast with extended hours awareness
         regime = detect_market_regime(data)
+        
         if regime in ["trending_up", "trending_down"]:
             baseline = improved_ensemble_forecast(data, periods, timeframe)
         elif regime == "mean_reverting":
@@ -1514,6 +1739,7 @@ def market_aware_forecast(data, periods=5, timeframe="1day", symbol="AAPL"):
                 if not pre_market_data.empty and not regular_data.empty:
                     # Calculate pre-market sentiment
                     pre_market_change = pre_market_data['Close'].pct_change().mean() * 100
+                    
                     # Incorporate pre-market sentiment into forecast
                     if abs(pre_market_change) > 1.0:  # Only adjust if significant
                         adjustment_factor = 1.0 + (pre_market_change * 0.02)
@@ -1522,6 +1748,7 @@ def market_aware_forecast(data, periods=5, timeframe="1day", symbol="AAPL"):
                 if not after_hours_data.empty and not regular_data.empty:
                     # Calculate after-hours sentiment
                     after_hours_change = after_hours_data['Close'].pct_change().mean() * 100
+                    
                     # Incorporate after-hours sentiment into forecast
                     if abs(after_hours_change) > 1.0:  # Only adjust if significant
                         adjustment_factor = 1.0 + (after_hours_change * 0.015)
@@ -1534,169 +1761,6 @@ def market_aware_forecast(data, periods=5, timeframe="1day", symbol="AAPL"):
     except Exception as e:
         print(f"Error in market-aware forecast: {e}")
         return improved_ensemble_forecast(data, periods, timeframe)
-
-# ---------------------------
-# Machine Learning Features and Models
-# ---------------------------
-def create_features(df, target_col='Close', window=10):
-    """
-    Create features for machine learning models.
-    Now includes extended hours features if available.
-    Args:
-        df (pd.DataFrame): Input DataFrame
-        target_col (str): Target column for prediction
-        window (int): Window size for rolling features
-    Returns:
-        pd.DataFrame: DataFrame with features
-    """
-    window = min(window, len(df) // 3)
-    if window < 2:
-        return pd.DataFrame(index=df.index)
-        
-    X = pd.DataFrame(index=df.index)
-    
-    # Lagged prices
-    for i in range(1, window + 1):
-        X[f'lag_{i}'] = df[target_col].shift(i)
-        
-    # Price changes
-    X['return_1d'] = df[target_col].pct_change(1)
-    X['return_5d'] = df[target_col].pct_change(window // 2)
-    
-    # Rolling statistics
-    X['rolling_mean'] = df[target_col].rolling(window=window).mean()
-    X['rolling_std'] = df[target_col].rolling(window=window).std()
-    
-    # Technical indicators if available
-    for col in ['RSI', 'MACD', 'ATR', 'SMA_20', 'BB_Upper', 'BB_Lower']:
-        if col in df.columns:
-            X[col] = df[col]
-    
-    # Extended hours features if available
-    for col in ['pre_market_change', 'after_hours_change', 
-               'pre_market_change_5d', 'after_hours_change_5d']:
-        if col in df.columns:
-            X[col] = df[col]
-    
-    # Session indicator variables if available
-    if 'session' in df.columns:
-        X['is_pre_market'] = (df['session'] == 'pre-market').astype(int)
-        X['is_after_hours'] = (df['session'] == 'after-hours').astype(int)
-    
-    # Fill NA values
-    X = X.fillna(method='bfill').fillna(method='ffill').fillna(0)
-    
-    return X
-
-def train_linear_model(X, y):
-    """Train a linear regression model."""
-    try:
-        model = LinearRegression()
-        
-        # Drop rows with NaN values
-        X_clean = X.dropna()
-        y_clean = y.loc[X_clean.index]
-        
-        if len(X_clean) < 10:  # Not enough data
-            return None
-            
-        model.fit(X_clean, y_clean)
-        return model
-    except Exception as e:
-        print(f"Error training linear model: {e}")
-        return None
-
-def train_ridge_model(X, y):
-    """Train a ridge regression model."""
-    try:
-        model = Ridge(alpha=1.0)
-        
-        # Drop rows with NaN values
-        X_clean = X.dropna()
-        y_clean = y.loc[X_clean.index]
-        
-        if len(X_clean) < 10:  # Not enough data
-            return None
-            
-        model.fit(X_clean, y_clean)
-        return model
-    except Exception as e:
-        print(f"Error training ridge model: {e}")
-        return None
-
-def train_gb_model(X, y):
-    """Train a gradient boosting regressor model."""
-    try:
-        model = GradientBoostingRegressor(n_estimators=50, learning_rate=0.1, max_depth=3, random_state=42)
-        
-        # Drop rows with NaN values
-        X_clean = X.dropna()
-        y_clean = y.loc[X_clean.index]
-        
-        if len(X_clean) < 10:  # Not enough data
-            return None
-            
-        model.fit(X_clean, y_clean)
-        return model
-    except Exception as e:
-        print(f"Error training gradient boosting model: {e}")
-        return None
-
-def train_svm_model(X, y):
-    """Train an SVR model."""
-    try:
-        # Scale the data
-        scaler = StandardScaler()
-        
-        # Drop rows with NaN values
-        X_clean = X.dropna()
-        y_clean = y.loc[X_clean.index]
-        
-        if len(X_clean) < 10:  # Not enough data
-            return None
-            
-        X_scaled = scaler.fit_transform(X_clean)
-        
-        model = SVR(kernel='rbf', C=100, gamma=0.1)
-        model.fit(X_scaled, y_clean)
-        
-        # Return model and scaler as a tuple
-        return (model, scaler)
-    except Exception as e:
-        print(f"Error training SVM model: {e}")
-        return None
-
-def generate_model_predictions(model, features, data, periods):
-    """Generate predictions from a trained model."""
-    if model is None:
-        return [data["Close"].iloc[-1]] * periods
-        
-    try:
-        predictions = []
-        current_features = features.iloc[-1:].copy()
-        
-        # For SVR, we need to scale the data
-        if isinstance(model, tuple) and len(model) == 2:
-            svm_model, scaler = model
-            current_features_scaled = scaler.transform(current_features)
-            last_pred = svm_model.predict(current_features_scaled)[0]
-        else:
-            last_pred = model.predict(current_features)[0]
-            
-        predictions.append(float(last_pred))
-        
-        # For simplicity, assume the features remain relatively constant
-        # In a more advanced implementation, you would update the features based on each prediction
-        for _ in range(1, periods):
-            # Add some random variation
-            variation = np.random.normal(0, 0.01) * predictions[-1]
-            next_pred = predictions[-1] * (1 + variation)
-            predictions.append(float(next_pred))
-            
-        return predictions
-    except Exception as e:
-        print(f"Error generating model predictions: {e}")
-        return [data["Close"].iloc[-1]] * periods
 
 # ---------------------------
 # Generate OHLC data for forecast points
@@ -1741,7 +1805,7 @@ def generate_forecast_ohlc(data, forecast):
             prev_close = last_close
         else:
             prev_close = forecast[i-1]
-            
+        
         direction = 1 if close > prev_close else -1
         
         # Determine which session metrics to use (cycle through sessions if available)
@@ -1797,9 +1861,9 @@ def generate_forecast_ohlc(data, forecast):
         # Add session information if we're using extended hours data
         if has_extended_hours:
             ohlc_point["session"] = current_session
-            
-        forecast_ohlc.append(ohlc_point)
         
+        forecast_ohlc.append(ohlc_point)
+    
     return forecast_ohlc
 
 # ---------------------------
@@ -1853,6 +1917,7 @@ def get_chart_data(data, forecast, timeframe):
             # Add session marker if available
             if 'session' in row:
                 ohlc_point["session"] = row["session"]
+            
             historical_ohlc.append(ohlc_point)
     
     # Generate forecast dates with proper ISO format
@@ -1903,7 +1968,7 @@ def get_chart_data(data, forecast, timeframe):
     if historical_ohlc:
         result["ohlc"] = historical_ohlc
         result["forecastOhlc"] = forecast_ohlc
-        
+    
     return result
 
 # ---------------------------
@@ -2005,7 +2070,7 @@ class SignalGenerator:
             return 100 if strength == "strong" else 60 if strength == "moderate" else 30
         elif signal_type == "sell":
             return -100 if strength == "strong" else -60 if strength == "moderate" else -30
-            
+        
         return 0
     
     def _simple_trend_signal(self, data):
@@ -2053,6 +2118,7 @@ class SignalGenerator:
             
             if has_rsi:
                 rsi = latest['RSI']
+                
                 if rsi < 30:
                     return {"type": "buy", "strength": "strong", "reason": "Oversold (RSI)"}
                 elif rsi < 40:
@@ -2067,6 +2133,7 @@ class SignalGenerator:
                 # Simple momentum based on price changes
                 if len(data) >= 10:
                     returns = data['Close'].pct_change(5).iloc[-1] * 100
+                    
                     if returns > 5:
                         return {"type": "sell", "strength": "moderate", "reason": "Potential overbought"}
                     elif returns < -5:
@@ -2157,7 +2224,12 @@ class SignalGenerator:
 def generate_trading_signals(data, risk_appetite="moderate"):
     """Generate trading signals for the given data."""
     generator = SignalGenerator(risk_appetite)
-    return generator.generate_signals(data)
+    signals = generator.generate_signals(data)
+    
+    # Debug logging for signals
+    print(f"Generated signals: type={signals['overall']['type']}, strength={signals['overall']['strength']}")
+    
+    return signals
 
 # ---------------------------
 # Enhanced News Sentiment Analysis
@@ -2172,7 +2244,7 @@ class EnhancedNewsSentimentAnalyzer:
             nltk.data.find('vader_lexicon')
         except LookupError:
             nltk.download('vader_lexicon')
-            
+        
         self.vader = SentimentIntensityAnalyzer()
         
         # Financial-specific words and their sentiment scores
@@ -2211,7 +2283,7 @@ class EnhancedNewsSentimentAnalyzer:
             category = "negative"
         else:
             category = "neutral"
-            
+        
         return {
             "score": normalized_score,
             "category": category,
@@ -2243,7 +2315,7 @@ class EnhancedNewsSentimentAnalyzer:
             }
             
             results.append(result)
-            
+        
         return results
     
     def get_overall_sentiment(self, analyzed_items):
@@ -2339,11 +2411,9 @@ def analyze_news_sentiment(symbol):
 # ---------------------------
 # Google Sheets Database Functions
 # ---------------------------
-
 def add_trading_signal(symbol, timeframe, signal_type, strength, entry_price, stop_loss, take_profit, risk_reward=None):
     """
     Add a new trading signal to the Google Sheets database.
-    
     Args:
         symbol (str): Stock symbol
         timeframe (str): Timeframe of the signal
@@ -2353,7 +2423,6 @@ def add_trading_signal(symbol, timeframe, signal_type, strength, entry_price, st
         stop_loss (float): Stop loss price
         take_profit (float): Take profit price
         risk_reward (float, optional): Risk/reward ratio
-        
     Returns:
         bool: True if successful, False otherwise
     """
@@ -2363,7 +2432,24 @@ def add_trading_signal(symbol, timeframe, signal_type, strength, entry_price, st
     
     try:
         # Get the trading_signals worksheet
-        worksheet = sheets_db.worksheet("trading_signals")
+        try:
+            worksheet = sheets_db.worksheet("trading_signals")
+            print(f"Successfully accessed trading_signals worksheet")
+        except Exception as e:
+            print(f"Error accessing trading_signals worksheet: {e}")
+            # Try to create the worksheet
+            try:
+                worksheet = sheets_db.add_worksheet(title="trading_signals", rows=1000, cols=20)
+                print(f"Created new trading_signals worksheet")
+                # Add header row
+                header_row = [
+                    "signal_id", "symbol", "timeframe", "signal_type", "strength", 
+                    "entry_price", "stop_loss", "take_profit", "created_at"
+                ]
+                worksheet.append_row(header_row)
+            except Exception as create_e:
+                print(f"Error creating trading_signals worksheet: {create_e}")
+                return False
         
         # Create a new row with the signal data
         signal_id = str(uuid.uuid4())
@@ -2399,14 +2485,12 @@ def add_trading_signal(symbol, timeframe, signal_type, strength, entry_price, st
 def add_forecast_record(symbol, timeframe, current_price, forecast_prices, regime=None):
     """
     Add a new forecast record to the Google Sheets database.
-    
     Args:
         symbol (str): Stock symbol
         timeframe (str): Timeframe of the forecast
         current_price (float): Current price when forecast was made
         forecast_prices (list): List of forecasted prices
         regime (str, optional): Market regime
-        
     Returns:
         str: Forecast ID if successful, None otherwise
     """
@@ -2416,7 +2500,24 @@ def add_forecast_record(symbol, timeframe, current_price, forecast_prices, regim
     
     try:
         # Get the forecast_history worksheet
-        worksheet = sheets_db.worksheet("forecast_history")
+        try:
+            worksheet = sheets_db.worksheet("forecast_history")
+            print(f"Successfully accessed forecast_history worksheet")
+        except Exception as e:
+            print(f"Error accessing forecast_history worksheet: {e}")
+            # Try to create the worksheet
+            try:
+                worksheet = sheets_db.add_worksheet(title="forecast_history", rows=1000, cols=20)
+                print(f"Created new forecast_history worksheet")
+                # Add header row
+                header_row = [
+                    "forecast_id", "symbol", "timeframe", "current_price", 
+                    "forecast_prices", "regime", "accuracy", "created_at"
+                ]
+                worksheet.append_row(header_row)
+            except Exception as create_e:
+                print(f"Error creating forecast_history worksheet: {create_e}")
+                return None
         
         # Create a new row with the forecast data
         forecast_id = str(uuid.uuid4())
@@ -2449,7 +2550,6 @@ def add_forecast_record(symbol, timeframe, current_price, forecast_prices, regim
 def add_market_analysis(symbol, timeframe, technical_indicators, sentiment_score=None, market_regime=None, openai_analysis=None):
     """
     Add a market analysis record to the Google Sheets database.
-    
     Args:
         symbol (str): Stock symbol
         timeframe (str): Timeframe of the analysis
@@ -2457,7 +2557,6 @@ def add_market_analysis(symbol, timeframe, technical_indicators, sentiment_score
         sentiment_score (float, optional): News sentiment score
         market_regime (str, optional): Market regime
         openai_analysis (str, optional): OpenAI analysis text
-        
     Returns:
         bool: True if successful, False otherwise
     """
@@ -2467,7 +2566,24 @@ def add_market_analysis(symbol, timeframe, technical_indicators, sentiment_score
     
     try:
         # Get the market_analysis worksheet
-        worksheet = sheets_db.worksheet("market_analysis")
+        try:
+            worksheet = sheets_db.worksheet("market_analysis")
+            print(f"Successfully accessed market_analysis worksheet")
+        except Exception as e:
+            print(f"Error accessing market_analysis worksheet: {e}")
+            # Try to create the worksheet
+            try:
+                worksheet = sheets_db.add_worksheet(title="market_analysis", rows=1000, cols=20)
+                print(f"Created new market_analysis worksheet")
+                # Add header row
+                header_row = [
+                    "analysis_id", "symbol", "timeframe", "technical_indicators", 
+                    "sentiment_score", "market_regime", "openai_analysis", "created_at"
+                ]
+                worksheet.append_row(header_row)
+            except Exception as create_e:
+                print(f"Error creating market_analysis worksheet: {create_e}")
+                return False
         
         # Create a new row with the analysis data
         analysis_id = str(uuid.uuid4())
@@ -2500,11 +2616,9 @@ def add_market_analysis(symbol, timeframe, technical_indicators, sentiment_score
 def update_forecast_accuracy(forecast_id, accuracy):
     """
     Update the accuracy of a forecast.
-    
     Args:
         forecast_id (str): ID of the forecast to update
         accuracy (float): Accuracy score (e.g., percentage error)
-        
     Returns:
         bool: True if successful, False otherwise
     """
@@ -2534,14 +2648,12 @@ def update_forecast_accuracy(forecast_id, accuracy):
 def add_performance_tracking(symbol, forecast_id, actual_prices, forecast_error, market_conditions=None):
     """
     Add a performance tracking record.
-    
     Args:
         symbol (str): Stock symbol
         forecast_id (str): ID of the related forecast
         actual_prices (list): List of actual prices that occurred
         forecast_error (float): Measure of forecast error
         market_conditions (str, optional): Notes on market conditions
-        
     Returns:
         bool: True if successful, False otherwise
     """
@@ -2551,7 +2663,24 @@ def add_performance_tracking(symbol, forecast_id, actual_prices, forecast_error,
     
     try:
         # Get the performance_tracking worksheet
-        worksheet = sheets_db.worksheet("performance_tracking")
+        try:
+            worksheet = sheets_db.worksheet("performance_tracking")
+            print(f"Successfully accessed performance_tracking worksheet")
+        except Exception as e:
+            print(f"Error accessing performance_tracking worksheet: {e}")
+            # Try to create the worksheet
+            try:
+                worksheet = sheets_db.add_worksheet(title="performance_tracking", rows=1000, cols=20)
+                print(f"Created new performance_tracking worksheet")
+                # Add header row
+                header_row = [
+                    "tracking_id", "symbol", "forecast_id", "actual_prices", 
+                    "forecast_error", "market_conditions", "created_at"
+                ]
+                worksheet.append_row(header_row)
+            except Exception as create_e:
+                print(f"Error creating performance_tracking worksheet: {create_e}")
+                return False
         
         # Create a new row
         tracking_id = str(uuid.uuid4())
@@ -2583,11 +2712,9 @@ def add_performance_tracking(symbol, forecast_id, actual_prices, forecast_error,
 def get_recent_signals(symbol=None, limit=10):
     """
     Get recent trading signals from the database.
-    
     Args:
         symbol (str, optional): Filter by symbol
         limit (int): Maximum number of signals to return
-        
     Returns:
         list: List of signal records
     """
@@ -2622,11 +2749,9 @@ def get_recent_signals(symbol=None, limit=10):
 def get_forecast_history(symbol=None, limit=10):
     """
     Get forecast history from the database.
-    
     Args:
         symbol (str, optional): Filter by symbol
         limit (int): Maximum number of forecasts to return
-        
     Returns:
         list: List of forecast records
     """
@@ -2669,15 +2794,12 @@ def get_forecast_history(symbol=None, limit=10):
 # ---------------------------
 # API Endpoints for Database Access
 # ---------------------------
-
 @app.route("/api/signals", methods=["GET"])
 def get_signals_api():
     """API endpoint to get trading signals."""
     symbol = request.args.get("symbol")
     limit = int(request.args.get("limit", 10))
-    
     signals = get_recent_signals(symbol, limit)
-    
     return jsonify({"signals": signals})
 
 @app.route("/api/forecasts", methods=["GET"])
@@ -2685,9 +2807,7 @@ def get_forecasts_api():
     """API endpoint to get forecast history."""
     symbol = request.args.get("symbol")
     limit = int(request.args.get("limit", 10))
-    
     forecasts = get_forecast_history(symbol, limit)
-    
     return jsonify({"forecasts": forecasts})
 
 # ---------------------------
@@ -2703,12 +2823,31 @@ def process():
     timeframe = request.args.get("timeframe", "1mo")
     news_count = int(request.args.get("news_count", "5"))
     risk_appetite = request.args.get("risk_appetite", "moderate")
+    
     # Extended hours is always enabled
     include_extended_hours = True
     
     print(f"Received request for symbol: {symbol} with timeframe: {timeframe}, extended hours always included")
     
     try:
+        # Test accessing each worksheet before processing
+        if sheets_db is not None:
+            try:
+                for sheet_name in ["trading_signals", "forecast_history", "market_analysis", "performance_tracking"]:
+                    try:
+                        worksheet = sheets_db.worksheet(sheet_name)
+                        print(f"Successfully accessed worksheet: {sheet_name}")
+                    except Exception as e:
+                        print(f"Error accessing worksheet {sheet_name}: {e}")
+                        # Try to create the worksheet
+                        try:
+                            worksheet = sheets_db.add_worksheet(title=sheet_name, rows=1000, cols=20)
+                            print(f"Created new worksheet: {sheet_name}")
+                        except Exception as create_e:
+                            print(f"Error creating worksheet {sheet_name}: {create_e}")
+            except Exception as e:
+                print(f"Error testing worksheet access: {e}")
+        
         # Use a timer to track execution time
         start_time = datetime.now()
         
@@ -2750,13 +2889,14 @@ def process():
         if sheets_db is not None:
             try:
                 current_price = float(data["Close"].iloc[-1])
+                
                 # Detect market regime
                 try:
                     regime = detect_market_regime(data)
                 except Exception as e:
                     print(f"Error detecting market regime: {e}")
                     regime = "unknown"
-                    
+                
                 # Add forecast to database
                 forecast_id = add_forecast_record(
                     symbol, 
@@ -2946,7 +3086,7 @@ def process():
                             if prev_close is not None:
                                 pre_market_gap = (pre_open - prev_close) / prev_close * 100
                                 eh_info += f"- Pre-market gap: {pre_market_gap:.2f}%\n"
-                                
+                            
                             pre_market_change = (pre_close - pre_open) / pre_open * 100
                             eh_info += f"- Pre-market session change: {pre_market_change:.2f}%\n"
                         
@@ -2989,7 +3129,6 @@ def process():
                             max_tokens=500,
                             temperature=0.7
                         )
-                        
                         openai_analysis_text = openai_response.choices[0].message.content
                         response["openai_refined_prediction"] = openai_analysis_text
                         print("Successfully generated OpenAI analysis")
@@ -3018,26 +3157,33 @@ def process():
                 response["trading_signals"] = signals
                 
                 # Store signal in Google Sheets if applicable
-                if sheets_db is not None and signals["overall"]["type"] in ["buy", "sell"]:
-                    if signals["overall"]["strength"] in ["strong", "moderate"]:
-                        # Extract risk management info
-                        risk_mgmt = signals.get("risk_management", {})
+                if sheets_db is not None:
+                    # Modified to store all signals including "hold"
+                    # Extract risk management info
+                    risk_mgmt = signals.get("risk_management", {})
+                    if risk_mgmt:
                         entry_price = risk_mgmt.get("entry", data["Close"].iloc[-1])
                         stop_loss = risk_mgmt.get("stop_loss", 0)
                         take_profit = risk_mgmt.get("take_profit_1", 0)
                         risk_reward = risk_mgmt.get("risk_reward", 0)
-                        
-                        # Store the signal
-                        add_trading_signal(
-                            symbol,
-                            timeframe,
-                            signals["overall"]["type"],
-                            signals["overall"]["strength"],
-                            entry_price,
-                            stop_loss,
-                            take_profit,
-                            risk_reward
-                        )
+                    else:
+                        # For hold signals, just use current price
+                        entry_price = data["Close"].iloc[-1]
+                        stop_loss = 0
+                        take_profit = 0
+                        risk_reward = 0
+                    
+                    # Store the signal
+                    add_trading_signal(
+                        symbol,
+                        timeframe,
+                        signals["overall"]["type"],
+                        signals["overall"]["strength"],
+                        entry_price,
+                        stop_loss,
+                        take_profit,
+                        risk_reward
+                    )
             except Exception as e:
                 print(f"Error generating trading signals: {e}")
         
