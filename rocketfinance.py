@@ -2811,6 +2811,159 @@ def get_forecasts_api():
     return jsonify({"forecasts": forecasts})
 
 # ---------------------------
+# Track Performance Endpoint
+# ---------------------------
+@app.route("/track_performance", methods=["GET"])
+def track_performance():
+    """
+    Track the performance of past forecasts by comparing with actual prices.
+    This endpoint is meant to be called periodically (e.g., daily) to track
+    the accuracy of forecasts.
+    """
+    try:
+        # Check if sheets_db is available
+        if sheets_db is None:
+            return jsonify({"error": "Google Sheets database is not available"}), 500
+        
+        # Get recent forecasts
+        forecasts = get_forecast_history(limit=20)
+        
+        if not forecasts:
+            return jsonify({"message": "No forecasts found to track"}), 200
+        
+        tracked_count = 0
+        
+        for forecast in forecasts:
+            # Skip if already has accuracy
+            if forecast.get('accuracy') and forecast.get('accuracy') != '':
+                continue
+            
+            # Get forecast details
+            forecast_id = forecast.get('forecast_id')
+            symbol = forecast.get('symbol')
+            timeframe = forecast.get('timeframe')
+            current_price = float(forecast.get('current_price', 0))
+            forecast_prices = forecast.get('forecast_prices', [])
+            created_at = forecast.get('created_at')
+            
+            # Skip if missing required data
+            if not (forecast_id and symbol and timeframe and created_at and forecast_prices):
+                continue
+            
+            # Parse creation date
+            try:
+                created_date = datetime.fromisoformat(created_at.replace('Z', '+00:00'))
+            except (ValueError, AttributeError):
+                created_date = datetime.now() - timedelta(days=7)  # Default fallback
+            
+            # Check if enough time has passed to evaluate forecast
+            min_days_to_evaluate = {
+                "5min": 0.01,  # ~15 minutes
+                "30min": 0.1,  # ~2.4 hours
+                "2h": 0.3,  # ~7 hours
+                "4h": 0.5,  # ~12 hours
+                "1day": 5,  # 5 days
+                "7day": 14,  # 2 weeks
+                "1mo": 30,  # 1 month
+                "3mo": 90,  # 3 months
+                "1yr": 180,  # 6 months (partial evaluation)
+            }
+            
+            days_needed = min_days_to_evaluate.get(timeframe, 7)
+            time_passed = (datetime.now() - created_date).total_seconds() / (24 * 3600)  # in days
+            
+            if time_passed < days_needed:
+                print(f"Skipping forecast {forecast_id} - not enough time passed ({time_passed:.1f} days < {days_needed} days)")
+                continue
+            
+            # Fetch current data to compare with forecast
+            try:
+                actual_data = fetch_data(symbol, timeframe)
+                
+                # Get actual prices for the forecast period
+                forecast_start_date = created_date
+                
+                # Calculate expected dates for the forecast points
+                forecast_dates = []
+                if timeframe.endswith("min"):
+                    minutes = int(timeframe.replace("min", ""))
+                    for i in range(len(forecast_prices)):
+                        forecast_dates.append(forecast_start_date + timedelta(minutes=minutes * (i+1)))
+                elif timeframe.endswith("h"):
+                    hours = int(timeframe.replace("h", ""))
+                    for i in range(len(forecast_prices)):
+                        forecast_dates.append(forecast_start_date + timedelta(hours=hours * (i+1)))
+                else:
+                    # For daily and longer timeframes
+                    business_days = 0
+                    for i in range(len(forecast_prices)):
+                        # Find the next business day
+                        test_date = forecast_start_date + timedelta(days=business_days+1)
+                        while test_date.weekday() >= 5:  # Skip weekends
+                            business_days += 1
+                            test_date = forecast_start_date + timedelta(days=business_days+1)
+                        business_days += 1
+                        forecast_dates.append(test_date)
+                
+                # Get actual prices from the actual data
+                actual_prices = []
+                for date in forecast_dates:
+                    # Find the closest date in the actual data
+                    closest_idx = None
+                    min_diff = float('inf')
+                    for i, idx in enumerate(actual_data.index):
+                        diff = abs((idx - date).total_seconds())
+                        if diff < min_diff:
+                            min_diff = diff
+                            closest_idx = i
+                    
+                    if closest_idx is not None:
+                        actual_prices.append(float(actual_data['Close'].iloc[closest_idx]))
+                    else:
+                        # If no close match, use the latest price
+                        actual_prices.append(float(actual_data['Close'].iloc[-1]))
+                
+                # Calculate forecast error (MAPE)
+                if not actual_prices:
+                    continue
+                
+                errors = []
+                for i in range(min(len(forecast_prices), len(actual_prices))):
+                    # Protect against division by zero
+                    if actual_prices[i] != 0:
+                        error = abs((forecast_prices[i] - actual_prices[i]) / actual_prices[i])
+                        errors.append(error)
+                
+                if errors:
+                    mape = sum(errors) / len(errors) * 100  # Mean Absolute Percentage Error
+                    
+                    # Update forecast accuracy
+                    update_forecast_accuracy(forecast_id, mape)
+                    
+                    # Add performance tracking record
+                    market_conditions = f"Market regime: {forecast.get('regime', 'unknown')}"
+                    add_performance_tracking(
+                        symbol,
+                        forecast_id,
+                        actual_prices,
+                        mape,
+                        market_conditions
+                    )
+                    
+                    tracked_count += 1
+                    print(f"Tracked performance for forecast {forecast_id}: MAPE={mape:.2f}%")
+            except Exception as e:
+                print(f"Error tracking performance for forecast {forecast_id}: {e}")
+        
+        return jsonify({
+            "message": f"Performance tracking completed. Tracked {tracked_count} forecasts.",
+            "tracked_count": tracked_count
+        })
+    except Exception as e:
+        print(f"Error in track_performance: {e}")
+        return jsonify({"error": str(e)}), 500
+
+# ---------------------------
 # Flask Routes
 # ---------------------------
 @app.route("/")
