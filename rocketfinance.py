@@ -2825,6 +2825,10 @@ def track_performance():
         if sheets_db is None:
             return jsonify({"error": "Google Sheets database is not available"}), 500
         
+        # Debug mode - force tracking regardless of time elapsed
+        debug_mode = request.args.get("debug", "false").lower() == "true"
+        print(f"Performance tracking running in {'DEBUG' if debug_mode else 'NORMAL'} mode")
+        
         # Get recent forecasts
         forecasts = get_forecast_history(limit=20)
         
@@ -2872,92 +2876,141 @@ def track_performance():
             days_needed = min_days_to_evaluate.get(timeframe, 7)
             time_passed = (datetime.now() - created_date).total_seconds() / (24 * 3600)  # in days
             
-            if time_passed < days_needed:
+            if time_passed < days_needed and not debug_mode:
                 print(f"Skipping forecast {forecast_id} - not enough time passed ({time_passed:.1f} days < {days_needed} days)")
                 continue
             
             # Fetch current data to compare with forecast
             try:
-                actual_data = fetch_data(symbol, timeframe)
+                print(f"Evaluating forecast {forecast_id} for {symbol} ({timeframe})")
                 
-                # Get actual prices for the forecast period
-                forecast_start_date = created_date
-                
-                # Calculate expected dates for the forecast points
-                forecast_dates = []
-                if timeframe.endswith("min"):
-                    minutes = int(timeframe.replace("min", ""))
+                # In debug mode, we'll create simulated actual prices with some variation from the forecast
+                if debug_mode:
+                    actual_data = data = fetch_data(symbol, timeframe)
+                    print(f"DEBUG MODE: Creating simulated actual prices for evaluation")
+                    
+                    # Create simulated actual prices based on forecast prices with random variation
+                    actual_prices = []
+                    for price in forecast_prices:
+                        # Add up to ±5% random variation
+                        variation = (1 + (np.random.random() * 0.1 - 0.05))
+                        actual_prices.append(float(price * variation))
+                    
+                    # Calculate forecast error (MAPE)
+                    errors = []
                     for i in range(len(forecast_prices)):
-                        forecast_dates.append(forecast_start_date + timedelta(minutes=minutes * (i+1)))
-                elif timeframe.endswith("h"):
-                    hours = int(timeframe.replace("h", ""))
-                    for i in range(len(forecast_prices)):
-                        forecast_dates.append(forecast_start_date + timedelta(hours=hours * (i+1)))
+                        if actual_prices[i] != 0:
+                            error = abs((forecast_prices[i] - actual_prices[i]) / actual_prices[i])
+                            errors.append(error)
+                    
+                    if errors:
+                        mape = sum(errors) / len(errors) * 100  # Mean Absolute Percentage Error
+                        print(f"DEBUG MODE: Calculated MAPE of {mape:.2f}% for {symbol} forecast")
+                        
+                        # Update forecast accuracy
+                        update_forecast_accuracy(forecast_id, mape)
+                        
+                        # Add performance tracking record
+                        market_conditions = f"DEBUG MODE: Simulated evaluation. Market regime: {forecast.get('regime', 'unknown')}"
+                        success = add_performance_tracking(
+                            symbol,
+                            forecast_id,
+                            actual_prices,
+                            mape,
+                            market_conditions
+                        )
+                        
+                        if success:
+                            tracked_count += 1
+                            print(f"DEBUG MODE: Successfully tracked performance for forecast {forecast_id}")
+                        else:
+                            print(f"DEBUG MODE: Failed to track performance for forecast {forecast_id}")
                 else:
-                    # For daily and longer timeframes
-                    business_days = 0
-                    for i in range(len(forecast_prices)):
-                        # Find the next business day
-                        test_date = forecast_start_date + timedelta(days=business_days+1)
-                        while test_date.weekday() >= 5:  # Skip weekends
-                            business_days += 1
-                            test_date = forecast_start_date + timedelta(days=business_days+1)
-                        business_days += 1
-                        forecast_dates.append(test_date)
-                
-                # Get actual prices from the actual data
-                actual_prices = []
-                for date in forecast_dates:
-                    # Find the closest date in the actual data
-                    closest_idx = None
-                    min_diff = float('inf')
-                    for i, idx in enumerate(actual_data.index):
-                        diff = abs((idx - date).total_seconds())
-                        if diff < min_diff:
-                            min_diff = diff
-                            closest_idx = i
+                    # Normal mode: fetch actual data
+                    actual_data = fetch_data(symbol, timeframe)
                     
-                    if closest_idx is not None:
-                        actual_prices.append(float(actual_data['Close'].iloc[closest_idx]))
+                    # Get actual prices for the forecast period
+                    forecast_start_date = created_date
+                    
+                    # Calculate expected dates for the forecast points
+                    forecast_dates = []
+                    if timeframe.endswith("min"):
+                        minutes = int(timeframe.replace("min", ""))
+                        for i in range(len(forecast_prices)):
+                            forecast_dates.append(forecast_start_date + timedelta(minutes=minutes * (i+1)))
+                    elif timeframe.endswith("h"):
+                        hours = int(timeframe.replace("h", ""))
+                        for i in range(len(forecast_prices)):
+                            forecast_dates.append(forecast_start_date + timedelta(hours=hours * (i+1)))
                     else:
-                        # If no close match, use the latest price
-                        actual_prices.append(float(actual_data['Close'].iloc[-1]))
-                
-                # Calculate forecast error (MAPE)
-                if not actual_prices:
-                    continue
-                
-                errors = []
-                for i in range(min(len(forecast_prices), len(actual_prices))):
-                    # Protect against division by zero
-                    if actual_prices[i] != 0:
-                        error = abs((forecast_prices[i] - actual_prices[i]) / actual_prices[i])
-                        errors.append(error)
-                
-                if errors:
-                    mape = sum(errors) / len(errors) * 100  # Mean Absolute Percentage Error
+                        # For daily and longer timeframes
+                        business_days = 0
+                        for i in range(len(forecast_prices)):
+                            # Find the next business day
+                            test_date = forecast_start_date + timedelta(days=business_days+1)
+                            while test_date.weekday() >= 5:  # Skip weekends
+                                business_days += 1
+                                test_date = forecast_start_date + timedelta(days=business_days+1)
+                            business_days += 1
+                            forecast_dates.append(test_date)
                     
-                    # Update forecast accuracy
-                    update_forecast_accuracy(forecast_id, mape)
+                    # Get actual prices from the actual data
+                    actual_prices = []
+                    for date in forecast_dates:
+                        # Find the closest date in the actual data
+                        closest_idx = None
+                        min_diff = float('inf')
+                        for i, idx in enumerate(actual_data.index):
+                            diff = abs((idx - date).total_seconds())
+                            if diff < min_diff:
+                                min_diff = diff
+                                closest_idx = i
+                        
+                        if closest_idx is not None:
+                            actual_prices.append(float(actual_data['Close'].iloc[closest_idx]))
+                        else:
+                            # If no close match, use the latest price
+                            actual_prices.append(float(actual_data['Close'].iloc[-1]))
                     
-                    # Add performance tracking record
-                    market_conditions = f"Market regime: {forecast.get('regime', 'unknown')}"
-                    add_performance_tracking(
-                        symbol,
-                        forecast_id,
-                        actual_prices,
-                        mape,
-                        market_conditions
-                    )
+                    # Calculate forecast error (MAPE)
+                    if not actual_prices:
+                        continue
                     
-                    tracked_count += 1
-                    print(f"Tracked performance for forecast {forecast_id}: MAPE={mape:.2f}%")
+                    errors = []
+                    for i in range(min(len(forecast_prices), len(actual_prices))):
+                        # Protect against division by zero
+                        if actual_prices[i] != 0:
+                            error = abs((forecast_prices[i] - actual_prices[i]) / actual_prices[i])
+                            errors.append(error)
+                    
+                    if errors:
+                        mape = sum(errors) / len(errors) * 100  # Mean Absolute Percentage Error
+                        
+                        # Update forecast accuracy
+                        update_forecast_accuracy(forecast_id, mape)
+                        
+                        # Add performance tracking record
+                        market_conditions = f"Market regime: {forecast.get('regime', 'unknown')}"
+                        success = add_performance_tracking(
+                            symbol,
+                            forecast_id,
+                            actual_prices,
+                            mape,
+                            market_conditions
+                        )
+                        
+                        if success:
+                            tracked_count += 1
+                            print(f"Tracked performance for forecast {forecast_id}: MAPE={mape:.2f}%")
+                        else:
+                            print(f"Failed to add performance tracking record for {forecast_id}")
             except Exception as e:
                 print(f"Error tracking performance for forecast {forecast_id}: {e}")
         
         return jsonify({
             "message": f"Performance tracking completed. Tracked {tracked_count} forecasts.",
-            "tracked_count": tracked_count
+            "tracked_count": tracked_count,
+            "debug_mode": debug_mode
         })
     except Exception as e:
         print(f"Error in track_performance: {e}")
