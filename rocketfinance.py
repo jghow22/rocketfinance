@@ -272,98 +272,6 @@ def fetch_data(symbol, timeframe, include_extended_hours=True):
         
         return df
     
-    else:
-        # Daily data: use TIME_SERIES_DAILY and retain OHLC.
-        function = "TIME_SERIES_DAILY"
-        # Always use full output size to get more historical data
-        outputsize = "full"
-        
-        params = {
-            "function": function,
-            "symbol": symbol,
-            "apikey": api_key,
-            "outputsize": outputsize,
-            "datatype": "json"
-        }
-        
-        expected_key = "Time Series (Daily)"
-        print(f"Fetching daily data for {symbol} with outputsize {outputsize}")
-        
-        response = requests.get("https://www.alphavantage.co/query", params=params)
-        
-        if response.status_code != 200:
-            raise ValueError(f"Alpha Vantage API request failed with status code {response.status_code}")
-            
-        data_json = response.json()
-        if expected_key not in data_json:
-            print("Alpha Vantage API response:", data_json)
-            raise ValueError("Alpha Vantage API response missing 'Time Series (Daily)'")
-            
-        ts_data = data_json[expected_key]
-        df = pd.DataFrame.from_dict(ts_data, orient="index")
-        df.index = pd.to_datetime(df.index)
-        df.sort_index(inplace=True)
-        
-        # Rename columns to maintain consistent OHLC structure
-        rename_dict = {
-            "1. open": "Open",
-            "2. high": "High",
-            "3. low": "Low",
-            "4. close": "Close"
-        }
-        
-        # Add volume if it exists
-        if "5. volume" in df.columns:
-            rename_dict["5. volume"] = "Volume"
-            
-        df = df.rename(columns=rename_dict)
-        
-        for col in ["Open", "High", "Low", "Close"]:
-            if col in df.columns:
-                df[col] = df[col].astype(float)
-                
-        if "Volume" in df.columns:
-            df["Volume"] = df["Volume"].astype(float)
-        
-        # Get more historical data for each timeframe
-        now = datetime.now()
-        if timeframe == "1day":
-            # Use last 60 days for daily charts (about 3 months of trading days)
-            start_date = now - timedelta(days=60)
-        elif timeframe == "7day":
-            # Use last 180 days for weekly charts (about 6 months)
-            start_date = now - timedelta(days=180)
-        elif timeframe == "1mo":
-            # Use last 365 days for monthly charts (1 year)
-            start_date = now - timedelta(days=365)
-        elif timeframe == "3mo":
-            # Use last 730 days for quarterly charts (2 years)
-            start_date = now - timedelta(days=730)
-        elif timeframe == "1yr":
-            # Use last 1825 days for yearly charts (5 years)
-            start_date = now - timedelta(days=1825)
-        else:
-            # Default to 90 days
-            start_date = now - timedelta(days=90)
-            
-        df = df[df.index >= start_date]
-        
-        if df.empty:
-            raise ValueError(f"No data found for symbol: {symbol} in the specified timeframe")
-            
-        if df.index.tz is None:
-            df.index = df.index.tz_localize("UTC")
-        
-        # Add symbol as name
-        df.name = symbol.upper()
-        
-        # Daily data doesn't include extended hours, so no session marking
-        
-        # Store in cache
-        cache[cache_key] = (datetime.now(), df)
-        
-        return df
-
 def mark_extended_hours(data):
     """
     Mark data points as regular hours, pre-market, or after-hours.
@@ -1445,7 +1353,7 @@ def generate_model_predictions(model, features, data, periods):
     except Exception as e:
         print(f"Error generating model predictions: {e}")
         return [data["Close"].iloc[-1]] * periods
-    
+
 def improved_ensemble_forecast(data, periods=5, timeframe="1day"):
     """
     Enhanced ensemble forecast with dynamic model weighting based on recent performance.
@@ -2723,7 +2631,7 @@ def update_forecast_accuracy(forecast_id, accuracy):
         print(f"Error updating forecast accuracy in Google Sheets: {e}")
         return False
 
-# New helper function to track performance for a specific symbol
+# New helper function to track performance for a specific symbol - DEBUG MODE OFF
 def track_symbol_performance(symbol):
     """Track performance for a specific symbol's forecasts."""
     try:
@@ -2775,7 +2683,7 @@ def track_symbol_performance(symbol):
             time_passed = (datetime.now() - created_date).total_seconds() / (24 * 3600)  # in days
             
             # For testing, we'll use a much shorter evaluation period
-            debug_mode = True  # Set to False in production
+            debug_mode = False  # CHANGED: Set to False for production
             
             if time_passed < days_needed and not debug_mode:
                 print(f"Skipping forecast {forecast_id} - not enough time passed ({time_passed:.1f} days < {days_needed} days)")
@@ -2858,6 +2766,7 @@ def track_symbol_performance(symbol):
                             if diff < min_diff:
                                 min_diff = diff
                                 closest_idx = i
+                        
                         if closest_idx is not None:
                             actual_prices.append(float(actual_data['Close'].iloc[closest_idx]))
                         else:
@@ -2867,16 +2776,20 @@ def track_symbol_performance(symbol):
                     # Calculate forecast error (MAPE)
                     if not actual_prices:
                         continue
+                    
                     errors = []
                     for i in range(min(len(forecast_prices), len(actual_prices))):
                         # Protect against division by zero
                         if actual_prices[i] != 0:
                             error = abs((forecast_prices[i] - actual_prices[i]) / actual_prices[i])
                             errors.append(error)
+                    
                     if errors:
                         mape = sum(errors) / len(errors) * 100  # Mean Absolute Percentage Error
+                        
                         # Update forecast accuracy
                         update_forecast_accuracy(forecast_id, mape)
+                        
                         # Add performance tracking record
                         market_conditions = f"Market regime: {forecast.get('regime', 'unknown')}"
                         success = add_performance_tracking(
@@ -2886,6 +2799,7 @@ def track_symbol_performance(symbol):
                             mape,
                             market_conditions
                         )
+                        
                         if success:
                             tracked_count += 1
                             print(f"Tracked performance for forecast {forecast_id}: MAPE={mape:.2f}%")
