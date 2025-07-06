@@ -162,6 +162,75 @@ def is_crypto_symbol(symbol):
     ]
     return symbol.upper() in crypto_symbols
 
+# Add this function after the is_crypto_symbol function
+def validate_stock_symbol(symbol):
+    """
+    Validate and normalize stock symbol format.
+    Ensures the symbol is properly formatted for API calls.
+    """
+    if not symbol or not isinstance(symbol, str):
+        return False, "Invalid symbol format"
+    
+    # Remove any whitespace and convert to uppercase
+    symbol = symbol.strip().upper()
+    
+    # Basic validation - stock symbols should be 1-5 characters, alphanumeric
+    if len(symbol) < 1 or len(symbol) > 5:
+        return False, f"Symbol length invalid: {len(symbol)} characters"
+    
+    # Check for valid characters (letters and numbers only)
+    if not symbol.replace('.', '').isalnum():
+        return False, "Symbol contains invalid characters"
+    
+    # Common invalid symbols
+    invalid_symbols = ['', 'NULL', 'NONE', 'NAN', 'UNDEFINED']
+    if symbol in invalid_symbols:
+        return False, f"Symbol '{symbol}' is invalid"
+    
+    return True, symbol
+
+def get_stock_info(symbol):
+    """
+    Get basic stock information to validate the symbol exists.
+    Returns None if symbol is invalid or not found.
+    """
+    try:
+        api_key = os.getenv("ALPHAVANTAGE_API_KEY")
+        if not api_key:
+            return None
+            
+        # Use the OVERVIEW endpoint to validate the symbol
+        params = {
+            "function": "OVERVIEW",
+            "symbol": symbol,
+            "apikey": api_key
+        }
+        
+        response = requests.get("https://www.alphavantage.co/query", params=params, timeout=10)
+        
+        if response.status_code == 200:
+            data = response.json()
+            
+            # If we get an error message, the symbol doesn't exist
+            if "Error Message" in data:
+                return None
+                
+            # If we get data, the symbol exists
+            if data and len(data) > 1:  # More than just the API response
+                return {
+                    "symbol": symbol,
+                    "name": data.get("Name", "Unknown"),
+                    "sector": data.get("Sector", "Unknown"),
+                    "industry": data.get("Industry", "Unknown"),
+                    "market_cap": data.get("MarketCapitalization", "Unknown")
+                }
+        
+        return None
+        
+    except Exception as e:
+        print(f"Error validating stock symbol {symbol}: {e}")
+        return None
+
 # ---------------------------
 # Data Fetching from Alpha Vantage (Updated with Crypto Support)
 # ---------------------------
@@ -169,11 +238,22 @@ def fetch_data(symbol, timeframe, include_extended_hours=True):
     """
     Fetch stock or crypto data for a symbol from Alpha Vantage with better error handling.
     Now supports both stocks and cryptocurrencies with improved crypto handling.
+    Enhanced to work with all valid stock symbols.
     """
     api_key = os.getenv("ALPHAVANTAGE_API_KEY")
     if not api_key:
         print("Alpha Vantage API key not set in environment variable ALPHAVANTAGE_API_KEY")
         raise ValueError("Alpha Vantage API key not set in environment variable ALPHAVANTAGE_API_KEY")
+    
+    # Validate and normalize the symbol
+    is_valid, normalized_symbol = validate_stock_symbol(symbol)
+    if not is_valid:
+        print(f"Invalid stock symbol: {symbol} - {normalized_symbol}")
+        # Create fallback data for invalid symbols
+        fallback_df = create_fallback_dataframe(symbol, False)
+        return fallback_df
+    
+    symbol = normalized_symbol
     
     # Detect if this is a cryptocurrency
     is_crypto = is_crypto_symbol(symbol)
@@ -276,9 +356,9 @@ def fetch_data(symbol, timeframe, include_extended_hours=True):
                     
                 print(f"Fetching stock {timeframe} data for {symbol}")
         
-        # Add retries for robustness
-        max_retries = 3
-        retry_delay = 2  # seconds
+        # Add retries for robustness with exponential backoff
+        max_retries = 5  # Increased retries for better reliability
+        retry_delay = 1  # Start with 1 second
         
         for attempt in range(max_retries):
             try:
@@ -2792,7 +2872,8 @@ def regime_aware_forecast(data, periods=5, timeframe="1day"):
 
 def market_aware_forecast(data, periods=5, timeframe="1day", symbol="AAPL"):
     """
-    Forecast that incorporates market sentiment, sector performance, and now extended hours data.
+    Enhanced forecast that incorporates market sentiment, sector performance, technical indicators,
+    and extended hours data for maximum accuracy.
     Args:
         data (pd.DataFrame): Historical price data
         periods (int): Number of periods to forecast
@@ -2811,28 +2892,101 @@ def market_aware_forecast(data, periods=5, timeframe="1day", symbol="AAPL"):
             print("Close column missing for market-aware forecast")
             return [100.0] * periods
         
-        # Get baseline forecast with extended hours awareness
+        # Get technical indicators for enhanced analysis
         try:
-            regime = detect_market_regime(data)
-            
-            if regime in ["trending_up", "trending_down"]:
-                baseline = improved_ensemble_forecast(data, periods, timeframe)
+            tech_data = calculate_technical_indicators(data)
+            if tech_data is None or len(tech_data) == 0:
+                tech_data = data
+        except Exception as e:
+            print(f"Error calculating technical indicators: {e}")
+            tech_data = data
+        
+        # Detect market regime with enhanced analysis
+        try:
+            regime = detect_market_regime(tech_data)
+            print(f"Detected market regime: {regime} for {symbol}")
+        except Exception as e:
+            print(f"Error detecting market regime: {e}")
+            regime = "unknown"
+        
+        # Get baseline forecast based on regime and data characteristics
+        try:
+            if regime == "trending_up":
+                # Use ensemble with trend emphasis
+                baseline = improved_ensemble_forecast(tech_data, periods, timeframe)
+                if baseline is None or len(baseline) == 0:
+                    baseline = enhanced_forecast(tech_data, periods, timeframe)
+                    
+            elif regime == "trending_down":
+                # Use ensemble with trend emphasis
+                baseline = improved_ensemble_forecast(tech_data, periods, timeframe)
+                if baseline is None or len(baseline) == 0:
+                    baseline = enhanced_forecast(tech_data, periods, timeframe)
+                    
             elif regime == "mean_reverting":
-                baseline = mean_reversion_forecast(data, periods)
+                # Use mean reversion with ensemble backup
+                try:
+                    baseline = mean_reversion_forecast(tech_data, periods)
+                except Exception as e:
+                    print(f"Mean reversion failed: {e}")
+                    baseline = improved_ensemble_forecast(tech_data, periods, timeframe)
+                    
             elif regime == "volatile":
-                baseline = enhanced_forecast(data, periods, timeframe)
-            else:
-                baseline = improved_ensemble_forecast(data, periods, timeframe)
+                # Use enhanced forecast with volatility adjustment
+                baseline = enhanced_forecast(tech_data, periods, timeframe)
+                if baseline is None or len(baseline) == 0:
+                    baseline = improved_ensemble_forecast(tech_data, periods, timeframe)
+                    
+            else:  # unknown or other regimes
+                # Use the most robust ensemble method
+                baseline = improved_ensemble_forecast(tech_data, periods, timeframe)
+                if baseline is None or len(baseline) == 0:
+                    baseline = enhanced_forecast(tech_data, periods, timeframe)
                 
-            # Check for None or empty forecast
+            # Validate baseline forecast
             if baseline is None or len(baseline) == 0:
-                print("Baseline forecast is None or empty")
-                baseline = [float(data["Close"].iloc[-1])] * periods
+                print("All baseline forecasts failed, using simple trend")
+                last_close = float(data["Close"].iloc[-1])
+                baseline = [last_close * (1 + 0.005 * i) for i in range(periods)]
                 
         except Exception as e:
             print(f"Error getting baseline forecast: {e}")
             # Fall back to a simple trending forecast
-            baseline = [float(data["Close"].iloc[-1]) * (1 + 0.01 * i) for i in range(periods)]
+            last_close = float(data["Close"].iloc[-1])
+            baseline = [last_close * (1 + 0.005 * i) for i in range(periods)]
+        
+        # Apply technical indicator adjustments
+        try:
+            if len(tech_data) > 20:  # Need enough data for reliable indicators
+                # RSI adjustment
+                if 'RSI' in tech_data.columns:
+                    last_rsi = tech_data['RSI'].iloc[-1]
+                    if last_rsi > 70:  # Overbought
+                        baseline = [price * 0.995 for price in baseline]  # Slight downward adjustment
+                    elif last_rsi < 30:  # Oversold
+                        baseline = [price * 1.005 for price in baseline]  # Slight upward adjustment
+                
+                # MACD adjustment
+                if 'MACD' in tech_data.columns and 'MACD_Signal' in tech_data.columns:
+                    last_macd = tech_data['MACD'].iloc[-1]
+                    last_signal = tech_data['MACD_Signal'].iloc[-1]
+                    if last_macd > last_signal:  # Bullish MACD
+                        baseline = [price * 1.002 for price in baseline]
+                    else:  # Bearish MACD
+                        baseline = [price * 0.998 for price in baseline]
+                
+                # Bollinger Bands adjustment
+                if 'BB_Upper' in tech_data.columns and 'BB_Lower' in tech_data.columns:
+                    last_close = data['Close'].iloc[-1]
+                    last_upper = tech_data['BB_Upper'].iloc[-1]
+                    last_lower = tech_data['BB_Lower'].iloc[-1]
+                    
+                    if last_close > last_upper:  # Above upper band
+                        baseline = [price * 0.997 for price in baseline]
+                    elif last_close < last_lower:  # Below lower band
+                        baseline = [price * 1.003 for price in baseline]
+        except Exception as e:
+            print(f"Error applying technical adjustments: {e}")
         
         # Check if we have extended hours data
         has_extended_hours = 'session' in data.columns
@@ -2850,8 +3004,8 @@ def market_aware_forecast(data, periods=5, timeframe="1day", symbol="AAPL"):
                     pre_market_change = pre_market_data['Close'].pct_change().mean() * 100
                     
                     # Incorporate pre-market sentiment into forecast
-                    if abs(pre_market_change) > 1.0:  # Only adjust if significant
-                        adjustment_factor = 1.0 + (pre_market_change * 0.02)
+                    if abs(pre_market_change) > 0.5:  # Lower threshold for more sensitivity
+                        adjustment_factor = 1.0 + (pre_market_change * 0.015)
                         baseline = [price * adjustment_factor for price in baseline]
                 
                 if not after_hours_data.empty and not regular_data.empty:
@@ -2859,13 +3013,40 @@ def market_aware_forecast(data, periods=5, timeframe="1day", symbol="AAPL"):
                     after_hours_change = after_hours_data['Close'].pct_change().mean() * 100
                     
                     # Incorporate after-hours sentiment into forecast
-                    if abs(after_hours_change) > 1.0:  # Only adjust if significant
-                        adjustment_factor = 1.0 + (after_hours_change * 0.015)
+                    if abs(after_hours_change) > 0.5:  # Lower threshold for more sensitivity
+                        adjustment_factor = 1.0 + (after_hours_change * 0.01)
                         baseline = [price * adjustment_factor for price in baseline]
             except Exception as e:
                 print(f"Error adjusting for extended hours sentiment: {e}")
         
+        # Final validation and smoothing
+        try:
+            # Ensure forecast values are reasonable
+            last_actual = float(data["Close"].iloc[-1])
+            for i, price in enumerate(baseline):
+                # Prevent extreme deviations
+                max_deviation = last_actual * 0.15  # Max 15% deviation
+                if abs(price - last_actual) > max_deviation:
+                    direction = 1 if price > last_actual else -1
+                    baseline[i] = last_actual + (direction * max_deviation)
+                
+                # Ensure positive values
+                baseline[i] = max(baseline[i], last_actual * 0.1)
+            
+            # Apply slight smoothing to reduce noise
+            if len(baseline) > 2:
+                smoothed = [baseline[0]]
+                for i in range(1, len(baseline) - 1):
+                    smoothed.append(0.7 * baseline[i] + 0.15 * baseline[i-1] + 0.15 * baseline[i+1])
+                smoothed.append(baseline[-1])
+                baseline = smoothed
+                
+        except Exception as e:
+            print(f"Error in final validation: {e}")
+        
+        print(f"Market-aware forecast for {symbol}: {baseline}")
         return baseline
+        
     except Exception as e:
         print(f"Error in market-aware forecast: {e}")
         import traceback
@@ -2873,9 +3054,10 @@ def market_aware_forecast(data, periods=5, timeframe="1day", symbol="AAPL"):
         
         # Fall back to a simple trending forecast
         try:
-            return [float(data["Close"].iloc[-1]) * (1 + 0.01 * i) for i in range(periods)]
+            last_close = float(data["Close"].iloc[-1])
+            return [last_close * (1 + 0.005 * i) for i in range(periods)]
         except:
-            return [100.0 * (1 + 0.01 * i) for i in range(periods)]
+            return [100.0 * (1 + 0.005 * i) for i in range(periods)]
 
 # ---------------------------
 # Generate OHLC data for forecast points
@@ -3053,13 +3235,14 @@ def get_chart_data(data, forecast, timeframe):
     """
     Build raw chart data arrays including ISO-formatted historical and forecast dates and values.
     Now includes OHLC data for both historical and forecast points and session markers.
+    Enhanced with detailed forecast analysis and confidence metrics for better readability.
     Updated to handle both stocks and cryptocurrencies with improved crypto support.
     Args:
         data (pd.DataFrame): Historical price data
         forecast (list): Forecasted prices
         timeframe (str): Time period for the data
     Returns:
-        dict: Chart data for frontend rendering
+        dict: Chart data for frontend rendering with enhanced forecast details
     """
     try:
         # Basic validation
@@ -3152,6 +3335,82 @@ def get_chart_data(data, forecast, timeframe):
         # Determine if this is crypto
         symbol = data.name if hasattr(data, 'name') else ""
         is_crypto = is_crypto_symbol(symbol)
+        
+        # Calculate forecast analysis and confidence metrics
+        forecast_analysis = {}
+        if forecast and len(forecast) > 0:
+            try:
+                last_actual = float(data["Close"].iloc[-1])
+                first_forecast = float(forecast[0])
+                last_forecast = float(forecast[-1])
+                
+                # Calculate forecast direction and strength
+                total_change = ((last_forecast - last_actual) / last_actual) * 100
+                daily_changes = []
+                for i in range(1, len(forecast)):
+                    daily_change = ((forecast[i] - forecast[i-1]) / forecast[i-1]) * 100
+                    daily_changes.append(daily_change)
+                
+                # Determine forecast direction
+                if total_change > 2.0:
+                    direction = "strong_bullish"
+                elif total_change > 0.5:
+                    direction = "bullish"
+                elif total_change < -2.0:
+                    direction = "strong_bearish"
+                elif total_change < -0.5:
+                    direction = "bearish"
+                else:
+                    direction = "neutral"
+                
+                # Calculate confidence based on data quality and volatility
+                try:
+                    # Calculate recent volatility
+                    recent_returns = data['Close'].pct_change().dropna().tail(20)
+                    volatility = recent_returns.std() * 100
+                    
+                    # Higher volatility = lower confidence
+                    if volatility < 1.0:
+                        confidence = "high"
+                    elif volatility < 2.5:
+                        confidence = "medium"
+                    else:
+                        confidence = "low"
+                except:
+                    confidence = "medium"
+                
+                # Calculate forecast accuracy indicators
+                forecast_consistency = 1.0 - (np.std(daily_changes) / abs(np.mean(daily_changes))) if daily_changes and np.mean(daily_changes) != 0 else 0.5
+                
+                forecast_analysis = {
+                    "direction": direction,
+                    "total_change_percent": round(total_change, 2),
+                    "average_daily_change": round(np.mean(daily_changes), 2) if daily_changes else 0,
+                    "confidence": confidence,
+                    "volatility": round(volatility, 2) if 'volatility' in locals() else 0,
+                    "consistency": round(forecast_consistency, 2),
+                    "current_price": round(last_actual, 2),
+                    "forecast_range": {
+                        "min": round(min(forecast), 2),
+                        "max": round(max(forecast), 2)
+                    }
+                }
+                
+            except Exception as e:
+                print(f"Error calculating forecast analysis: {e}")
+                forecast_analysis = {
+                    "direction": "neutral",
+                    "total_change_percent": 0,
+                    "average_daily_change": 0,
+                    "confidence": "medium",
+                    "volatility": 0,
+                    "consistency": 0.5,
+                    "current_price": round(float(data["Close"].iloc[-1]), 2),
+                    "forecast_range": {
+                        "min": round(min(forecast), 2) if forecast else 0,
+                        "max": round(max(forecast), 2) if forecast else 0
+                    }
+                }
         
         # Debug information for crypto
         if is_crypto:
@@ -3281,7 +3540,8 @@ def get_chart_data(data, forecast, timeframe):
             "includesExtendedHours": 'session' in data.columns and not is_crypto,  # Crypto doesn't have extended hours
             "isIntraday": is_intraday,
             "isCrypto": is_crypto,
-            "tradingHours": "24/7" if is_crypto else "Market Hours"
+            "tradingHours": "24/7" if is_crypto else "Market Hours",
+            "forecastAnalysis": forecast_analysis
         }
         
         # Include OHLC data if available
@@ -4559,9 +4819,33 @@ def process():
     # Extended hours is always enabled
     include_extended_hours = True
     
+    # Validate and normalize the symbol
+    is_valid, normalized_symbol = validate_stock_symbol(symbol)
+    if not is_valid:
+        print(f"Invalid stock symbol: {symbol} - {normalized_symbol}")
+        return jsonify({
+            "error": "Invalid symbol",
+            "message": f"Symbol '{symbol}' is not valid. Please enter a valid stock symbol (1-5 characters, letters and numbers only).",
+            "suggestions": ["AAPL", "MSFT", "GOOGL", "TSLA", "AMZN"]
+        }), 400
+    
+    symbol = normalized_symbol
+    
     # Detect if this is crypto
     is_crypto = is_crypto_symbol(symbol)
     print(f"Received request for {'crypto' if is_crypto else 'stock'} symbol: {symbol} with timeframe: {timeframe}")
+    
+    # For stocks, validate the symbol exists (optional, can be disabled for performance)
+    if not is_crypto:
+        try:
+            stock_info = get_stock_info(symbol)
+            if stock_info:
+                print(f"Stock validated: {stock_info['name']} ({stock_info['sector']})")
+            else:
+                print(f"Warning: Stock symbol '{symbol}' may not exist or be inactive")
+        except Exception as e:
+            print(f"Error validating stock symbol: {e}")
+            # Continue processing even if validation fails
     
     try:
         # Test accessing each worksheet before processing
@@ -4586,6 +4870,7 @@ def process():
         start_time = datetime.now()
         
         # Fetch data with extended hours always enabled (stocks) or 24/7 (crypto)
+        print(f"Fetching data for {symbol} ({timeframe})...")
         data = fetch_data(symbol, timeframe, include_extended_hours)
         
         # Verify data is valid
@@ -4600,6 +4885,10 @@ def process():
             data['Close'] = 100.5
             data['Volume'] = 1000000
             data.name = symbol.upper()
+        else:
+            print(f"Successfully fetched {len(data)} data points for {symbol}")
+            print(f"Data range: {data.index[0]} to {data.index[-1]}")
+            print(f"Price range: ${data['Close'].min():.2f} to ${data['Close'].max():.2f}")
         
         # Make sure data has the minimum required columns
         required_columns = ["Open", "High", "Low", "Close"]
