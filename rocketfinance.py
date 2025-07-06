@@ -147,76 +147,134 @@ def create_dark_style():
     return style
 
 # ---------------------------
-# Data Fetching from Alpha Vantage
+# Cryptocurrency Support Functions
+# ---------------------------
+def is_crypto_symbol(symbol):
+    """
+    Detect if symbol is cryptocurrency.
+    """
+    crypto_symbols = [
+        'BTC', 'ETH', 'XRP', 'ADA', 'DOT', 'LINK', 'LTC', 'BCH', 'DOGE', 
+        'SOL', 'MATIC', 'AVAX', 'ATOM', 'UNI', 'AAVE', 'SUSHI', 'COMP',
+        'MKR', 'SNX', 'YFI', 'CRV', 'BAL', 'ALGO', 'VET', 'TRX', 'XLM',
+        'EOS', 'NEO', 'IOTA', 'DASH', 'ZEC', 'XMR', 'ETC', 'BSV', 'USDT',
+        'USDC', 'BNB', 'FTT', 'HT', 'OKB', 'LEO', 'CRO', 'SHIB'
+    ]
+    return symbol.upper() in crypto_symbols
+
+# ---------------------------
+# Data Fetching from Alpha Vantage (Updated with Crypto Support)
 # ---------------------------
 def fetch_data(symbol, timeframe, include_extended_hours=True):
     """
-    Fetch stock data for a symbol from Alpha Vantage with better error handling.
+    Fetch stock or crypto data for a symbol from Alpha Vantage with better error handling.
+    Now supports both stocks and cryptocurrencies.
     """
     api_key = os.getenv("ALPHAVANTAGE_API_KEY")
     if not api_key:
         print("Alpha Vantage API key not set in environment variable ALPHAVANTAGE_API_KEY")
         raise ValueError("Alpha Vantage API key not set in environment variable ALPHAVANTAGE_API_KEY")
     
+    # Detect if this is a cryptocurrency
+    is_crypto = is_crypto_symbol(symbol)
+    market = "USD"  # Default market for crypto
+    
     # Check cache first
-    cache_key = f"{symbol.upper()}:{timeframe}:{include_extended_hours}"
+    cache_key = f"{symbol.upper()}:{timeframe}:{include_extended_hours}:{is_crypto}"
     if cache_key in cache:
         timestamp, data = cache[cache_key]
         age = (datetime.now() - timestamp).total_seconds()
         if age < 300:  # 5 minutes cache
-            print(f"Using cached data for {symbol} {timeframe} (age: {age:.1f}s)")
+            print(f"Using cached data for {symbol} {timeframe} ({'crypto' if is_crypto else 'stock'}) (age: {age:.1f}s)")
             return data
     
-    # Determine the appropriate function and parameters based on timeframe
+    # Determine the appropriate function and parameters based on timeframe and asset type
     intraday_options = ["5min", "30min", "2h", "4h"]
     
     try:
-        if timeframe in intraday_options:
-            base_interval = "60min" if timeframe in ["2h", "4h"] else timeframe
-            function = "TIME_SERIES_INTRADAY"
-            # Always use full output size for more historical data
-            outputsize = "full"
-            params = {
-                "function": function,
-                "symbol": symbol,
-                "apikey": api_key,
-                "interval": base_interval,
-                "outputsize": outputsize,
-                "datatype": "json",
-                "extended_hours": "true" if include_extended_hours else "false"
-            }
-            expected_key = f"Time Series ({base_interval})"
-            print(f"Fetching intraday data for {symbol} with interval {base_interval}, extended hours: {include_extended_hours}")
+        if is_crypto:
+            # Cryptocurrency data fetching
+            if timeframe in intraday_options:
+                base_interval = "60min" if timeframe in ["2h", "4h"] else timeframe
+                function = "DIGITAL_CURRENCY_INTRADAY"
+                params = {
+                    "function": function,
+                    "symbol": symbol,
+                    "market": market,
+                    "apikey": api_key,
+                    "interval": base_interval,
+                    "datatype": "json"
+                }
+                expected_key = f"Time Series (Digital Currency Intraday)"
+                print(f"Fetching crypto intraday data for {symbol} with interval {base_interval}")
+            else:
+                # For daily/weekly/monthly crypto data
+                if timeframe == "1day":
+                    function = "DIGITAL_CURRENCY_DAILY"
+                    expected_key = "Time Series (Digital Currency Daily)"
+                elif timeframe == "7day":
+                    function = "DIGITAL_CURRENCY_WEEKLY"
+                    expected_key = "Time Series (Digital Currency Weekly)"
+                elif timeframe in ["1mo", "3mo", "1yr"]:
+                    function = "DIGITAL_CURRENCY_MONTHLY"
+                    expected_key = "Time Series (Digital Currency Monthly)"
+                
+                params = {
+                    "function": function,
+                    "symbol": symbol,
+                    "market": market,
+                    "apikey": api_key,
+                    "datatype": "json"
+                }
+                
+                print(f"Fetching crypto {timeframe} data for {symbol}")
         else:
-            # For daily data
-            function = "TIME_SERIES_DAILY"
-            if timeframe == "1day":
+            # Stock data fetching (existing logic)
+            if timeframe in intraday_options:
+                base_interval = "60min" if timeframe in ["2h", "4h"] else timeframe
+                function = "TIME_SERIES_INTRADAY"
                 outputsize = "full"
                 params = {
                     "function": function,
                     "symbol": symbol,
                     "apikey": api_key,
+                    "interval": base_interval,
                     "outputsize": outputsize,
-                    "datatype": "json"
+                    "datatype": "json",
+                    "extended_hours": "true" if include_extended_hours else "false"
                 }
-                expected_key = "Time Series (Daily)"
+                expected_key = f"Time Series ({base_interval})"
+                print(f"Fetching stock intraday data for {symbol} with interval {base_interval}, extended hours: {include_extended_hours}")
             else:
-                # For weekly and monthly data
-                if timeframe == "7day":
-                    function = "TIME_SERIES_WEEKLY"
-                    expected_key = "Weekly Time Series"
-                elif timeframe in ["1mo", "3mo", "1yr"]:
-                    function = "TIME_SERIES_MONTHLY"
-                    expected_key = "Monthly Time Series"
-                
-                params = {
-                    "function": function,
-                    "symbol": symbol,
-                    "apikey": api_key,
-                    "datatype": "json"
-                }
-                
-            print(f"Fetching {timeframe} data for {symbol}")
+                # For daily data
+                function = "TIME_SERIES_DAILY"
+                if timeframe == "1day":
+                    outputsize = "full"
+                    params = {
+                        "function": function,
+                        "symbol": symbol,
+                        "apikey": api_key,
+                        "outputsize": outputsize,
+                        "datatype": "json"
+                    }
+                    expected_key = "Time Series (Daily)"
+                else:
+                    # For weekly and monthly data
+                    if timeframe == "7day":
+                        function = "TIME_SERIES_WEEKLY"
+                        expected_key = "Weekly Time Series"
+                    elif timeframe in ["1mo", "3mo", "1yr"]:
+                        function = "TIME_SERIES_MONTHLY"
+                        expected_key = "Monthly Time Series"
+                    
+                    params = {
+                        "function": function,
+                        "symbol": symbol,
+                        "apikey": api_key,
+                        "datatype": "json"
+                    }
+                    
+                print(f"Fetching stock {timeframe} data for {symbol}")
         
         # Add retries for robustness
         max_retries = 3
@@ -226,7 +284,6 @@ def fetch_data(symbol, timeframe, include_extended_hours=True):
             try:
                 response = requests.get("https://www.alphavantage.co/query", params=params, timeout=10)
                 
-                # Print response for debugging
                 print(f"Alpha Vantage API response status code: {response.status_code}")
                 
                 if response.status_code != 200:
@@ -234,16 +291,16 @@ def fetch_data(symbol, timeframe, include_extended_hours=True):
                     if attempt < max_retries - 1:
                         print(f"Retrying in {retry_delay} seconds... (Attempt {attempt+1}/{max_retries})")
                         time.sleep(retry_delay)
-                        retry_delay *= 2  # Exponential backoff
+                        retry_delay *= 2
                         continue
                     else:
-                        # Return a minimal fallback DataFrame with latest data if we have any cached
+                        # Return fallback data
                         if cache_key in cache:
                             print("Using older cached data as fallback")
                             _, old_data = cache[cache_key]
                             return old_data
                         
-                        # Create a minimal empty DataFrame as last resort
+                        # Create fallback DataFrame
                         print("Creating fallback empty DataFrame")
                         fallback_df = pd.DataFrame(columns=["Open", "High", "Low", "Close", "Volume"])
                         fallback_df.index = pd.date_range(start=datetime.now()-timedelta(days=5), periods=5, freq='D')
@@ -261,7 +318,6 @@ def fetch_data(symbol, timeframe, include_extended_hours=True):
                 if "Error Message" in data_json:
                     print(f"Alpha Vantage API error: {data_json['Error Message']}")
                     if "API call frequency" in data_json.get("Error Message", ""):
-                        # Rate limit hit, wait longer
                         if attempt < max_retries - 1:
                             print(f"Rate limit hit. Retrying in {retry_delay*2} seconds...")
                             time.sleep(retry_delay*2)
@@ -274,7 +330,7 @@ def fetch_data(symbol, timeframe, include_extended_hours=True):
                         _, old_data = cache[cache_key]
                         return old_data
                     
-                    # Create a minimal empty DataFrame as last resort
+                    # Create fallback DataFrame
                     print("Creating fallback empty DataFrame after API error")
                     fallback_df = pd.DataFrame(columns=["Open", "High", "Low", "Close", "Volume"])
                     fallback_df.index = pd.date_range(start=datetime.now()-timedelta(days=5), periods=5, freq='D')
@@ -292,7 +348,6 @@ def fetch_data(symbol, timeframe, include_extended_hours=True):
                     print(f"Response keys: {list(data_json.keys())}")
                     if "Note" in data_json:
                         print(f"API Note: {data_json['Note']}")
-                        # This is likely a rate limit issue
                         if attempt < max_retries - 1:
                             print(f"Retrying in {retry_delay*2} seconds...")
                             time.sleep(retry_delay*2)
@@ -305,7 +360,7 @@ def fetch_data(symbol, timeframe, include_extended_hours=True):
                         _, old_data = cache[cache_key]
                         return old_data
                     
-                    # Create a minimal empty DataFrame as last resort
+                    # Create fallback DataFrame
                     print("Creating fallback empty DataFrame after missing key")
                     fallback_df = pd.DataFrame(columns=["Open", "High", "Low", "Close", "Volume"])
                     fallback_df.index = pd.date_range(start=datetime.now()-timedelta(days=5), periods=5, freq='D')
@@ -333,7 +388,7 @@ def fetch_data(symbol, timeframe, include_extended_hours=True):
                         _, old_data = cache[cache_key]
                         return old_data
                     
-                    # Create a minimal empty DataFrame as last resort
+                    # Create fallback DataFrame
                     print("Creating fallback empty DataFrame after request exception")
                     fallback_df = pd.DataFrame(columns=["Open", "High", "Low", "Close", "Volume"])
                     fallback_df.index = pd.date_range(start=datetime.now()-timedelta(days=5), periods=5, freq='D')
@@ -356,7 +411,7 @@ def fetch_data(symbol, timeframe, include_extended_hours=True):
                 _, old_data = cache[cache_key]
                 return old_data
             
-            # Create a minimal empty DataFrame as last resort
+            # Create fallback DataFrame
             print("Creating fallback empty DataFrame for empty response")
             fallback_df = pd.DataFrame(columns=["Open", "High", "Low", "Close", "Volume"])
             fallback_df.index = pd.date_range(start=datetime.now()-timedelta(days=5), periods=5, freq='D')
@@ -374,16 +429,37 @@ def fetch_data(symbol, timeframe, include_extended_hours=True):
         df.sort_index(inplace=True)
         
         # Rename columns to maintain consistent OHLC structure
-        rename_dict = {
-            "1. open": "Open",
-            "2. high": "High",
-            "3. low": "Low",
-            "4. close": "Close"
-        }
-        # Add volume if it exists
-        if "5. volume" in df.columns:
-            rename_dict["5. volume"] = "Volume"
-        df = df.rename(columns=rename_dict)
+        if is_crypto:
+            # Crypto API uses different column names
+            rename_dict = {}
+            
+            # Try different possible column name patterns for crypto
+            actual_columns = df.columns.tolist()
+            
+            for col in actual_columns:
+                if "open" in col.lower() and market.lower() in col.lower():
+                    rename_dict[col] = "Open"
+                elif "high" in col.lower() and market.lower() in col.lower():
+                    rename_dict[col] = "High"
+                elif "low" in col.lower() and market.lower() in col.lower():
+                    rename_dict[col] = "Low"
+                elif "close" in col.lower() and market.lower() in col.lower():
+                    rename_dict[col] = "Close"
+                elif "volume" in col.lower():
+                    rename_dict[col] = "Volume"
+            
+            df = df.rename(columns=rename_dict)
+        else:
+            # Stock API column names
+            rename_dict = {
+                "1. open": "Open",
+                "2. high": "High", 
+                "3. low": "Low",
+                "4. close": "Close"
+            }
+            if "5. volume" in df.columns:
+                rename_dict["5. volume"] = "Volume"
+            df = df.rename(columns=rename_dict)
         
         # Convert numeric columns
         for col in ["Open", "High", "Low", "Close"]:
@@ -429,10 +505,15 @@ def fetch_data(symbol, timeframe, include_extended_hours=True):
             if "Volume" in df.columns:
                 agg_dict["Volume"] = 'sum'
             df = df.resample(freq).agg(agg_dict).dropna()
-            print(f"Resampled intraday data to {freq} frequency, resulting in {len(df)} rows.")
+            print(f"Resampled {'crypto' if is_crypto else 'stock'} data to {freq} frequency, resulting in {len(df)} rows.")
         
-        # Mark extended hours data if enabled for intraday
-        if include_extended_hours and timeframe in intraday_options:
+        # For crypto, we don't have extended hours concept (24/7 trading)
+        # But we can still mark sessions for consistency
+        if is_crypto and include_extended_hours:
+            # Add a session column but mark everything as 'regular' since crypto trades 24/7
+            df['session'] = 'regular'
+        elif not is_crypto and include_extended_hours and timeframe in intraday_options:
+            # Mark extended hours data for stocks
             df = mark_extended_hours(df)
         
         # Add symbol as name
@@ -441,7 +522,7 @@ def fetch_data(symbol, timeframe, include_extended_hours=True):
         # Store in cache
         cache[cache_key] = (datetime.now(), df)
         
-        print(f"Successfully fetched data for {symbol}, shape: {df.shape}")
+        print(f"Successfully fetched {'crypto' if is_crypto else 'stock'} data for {symbol}, shape: {df.shape}")
         return df
         
     except Exception as e:
@@ -455,7 +536,7 @@ def fetch_data(symbol, timeframe, include_extended_hours=True):
             _, old_data = cache[cache_key]
             return old_data
         
-        # Create a minimal empty DataFrame as last resort
+        # Create fallback DataFrame
         print("Creating fallback empty DataFrame after exception")
         fallback_df = pd.DataFrame(columns=["Open", "High", "Low", "Close", "Volume"])
         fallback_df.index = pd.date_range(start=datetime.now()-timedelta(days=5), periods=5, freq='D')
@@ -508,13 +589,14 @@ def mark_extended_hours(data):
     return df
 
 # ---------------------------
-# News Fetching Function
+# News Fetching Function (Updated with Crypto Support)
 # ---------------------------
 def fetch_news(symbol, max_items=5):
     """
     Fetch actual news articles for the symbol from a news API.
+    Now supports both stocks and cryptocurrencies.
     Args:
-        symbol: The stock symbol to fetch news for
+        symbol: The stock/crypto symbol to fetch news for
         max_items: Maximum number of news items to return
     Returns:
         A list of news articles, each with title, source, and summary
@@ -526,31 +608,81 @@ def fetch_news(symbol, max_items=5):
             print("Warning: NewsAPI key not set, using placeholder news")
             return get_placeholder_news(symbol)
         
-        # Prepare the query - search for both the symbol and company name if possible
-        company_names = {
-            "AAPL": "Apple",
-            "MSFT": "Microsoft",
-            "GOOGL": "Google",
-            "AMZN": "Amazon",
-            "META": "Meta Facebook",
-            "TSLA": "Tesla",
-            "NVDA": "NVIDIA",
-            "JPM": "JPMorgan",
-            "BAC": "Bank of America",
-            "WMT": "Walmart",
-            "DIS": "Disney",
-            "NFLX": "Netflix",
-            "XOM": "Exxon",
-            "CVX": "Chevron",
-            "PFE": "Pfizer",
-            "JNJ": "Johnson & Johnson"
-            # Add more common symbols and company names as needed
-        }
+        # Prepare the query - search for both the symbol and full name
+        is_crypto = is_crypto_symbol(symbol)
         
-        # Construct query using both symbol and company name if available
-        query = symbol
-        if symbol.upper() in company_names:
-            query = f"{symbol} OR {company_names[symbol.upper()]}"
+        if is_crypto:
+            # Cryptocurrency name mapping
+            crypto_names = {
+                "BTC": "Bitcoin",
+                "ETH": "Ethereum", 
+                "XRP": "Ripple XRP",
+                "ADA": "Cardano",
+                "DOT": "Polkadot",
+                "LINK": "Chainlink",
+                "LTC": "Litecoin",
+                "BCH": "Bitcoin Cash",
+                "DOGE": "Dogecoin",
+                "SOL": "Solana",
+                "MATIC": "Polygon",
+                "AVAX": "Avalanche",
+                "ATOM": "Cosmos",
+                "UNI": "Uniswap",
+                "AAVE": "Aave",
+                "SUSHI": "SushiSwap",
+                "COMP": "Compound",
+                "MKR": "MakerDAO",
+                "SNX": "Synthetix",
+                "YFI": "Yearn Finance",
+                "CRV": "Curve",
+                "BAL": "Balancer",
+                "ALGO": "Algorand",
+                "VET": "VeChain",
+                "TRX": "Tron",
+                "XLM": "Stellar",
+                "EOS": "EOS",
+                "NEO": "NEO",
+                "IOTA": "IOTA",
+                "DASH": "Dash",
+                "ZEC": "Zcash",
+                "XMR": "Monero",
+                "ETC": "Ethereum Classic",
+                "BSV": "Bitcoin SV",
+                "USDT": "Tether",
+                "USDC": "USD Coin",
+                "BNB": "Binance Coin",
+                "SHIB": "Shiba Inu"
+            }
+            
+            # Construct query for crypto
+            query = symbol
+            if symbol.upper() in crypto_names:
+                query = f"{symbol} OR {crypto_names[symbol.upper()]} OR cryptocurrency"
+        else:
+            # Stock name mapping (existing logic)
+            company_names = {
+                "AAPL": "Apple",
+                "MSFT": "Microsoft",
+                "GOOGL": "Google",
+                "AMZN": "Amazon",
+                "META": "Meta Facebook",
+                "TSLA": "Tesla",
+                "NVDA": "NVIDIA",
+                "JPM": "JPMorgan",
+                "BAC": "Bank of America",
+                "WMT": "Walmart",
+                "DIS": "Disney",
+                "NFLX": "Netflix",
+                "XOM": "Exxon",
+                "CVX": "Chevron",
+                "PFE": "Pfizer",
+                "JNJ": "Johnson & Johnson"
+            }
+            
+            # Construct query for stocks
+            query = symbol
+            if symbol.upper() in company_names:
+                query = f"{symbol} OR {company_names[symbol.upper()]}"
         
         # Build API request
         url = "https://newsapi.org/v2/everything"
@@ -601,28 +733,52 @@ def fetch_news(symbol, max_items=5):
         return get_placeholder_news(symbol)
 
 def get_placeholder_news(symbol):
-    """Return placeholder news when the API is unavailable."""
+    """Return placeholder news when the API is unavailable. Now supports crypto."""
     current_date = datetime.now().strftime("%Y-%m-%d")
-    news = [
-        {
-            "title": f"{symbol.upper()} stock shows market volatility",
-            "source": {"name": "Market Insight"},
-            "summary": f"Recent trading of {symbol.upper()} demonstrates ongoing market volatility as investors respond to broader economic indicators and company-specific developments.",
-            "publishedAt": current_date
-        },
-        {
-            "title": f"Analysts issue updated guidance on {symbol.upper()}",
-            "source": {"name": "Financial Observer"},
-            "summary": f"Investment analysts have issued new price targets for {symbol.upper()}, reflecting revised expectations based on recent performance and forward outlook.",
-            "publishedAt": current_date
-        },
-        {
-            "title": f"{symbol.upper()} in focus as market evaluates sector trends",
-            "source": {"name": "Trading View"},
-            "summary": f"Investors are closely watching {symbol.upper()} as a possible indicator of broader sector performance. Technical analysis suggests watching key support and resistance levels.",
-            "publishedAt": current_date
-        }
-    ]
+    is_crypto = is_crypto_symbol(symbol)
+    
+    if is_crypto:
+        news = [
+            {
+                "title": f"{symbol.upper()} shows cryptocurrency market volatility",
+                "source": {"name": "Crypto Insight"},
+                "summary": f"Recent trading of {symbol.upper()} demonstrates ongoing crypto market volatility as investors respond to broader market indicators and blockchain developments.",
+                "publishedAt": current_date
+            },
+            {
+                "title": f"Analysts issue updated guidance on {symbol.upper()}",
+                "source": {"name": "Crypto Observer"},
+                "summary": f"Cryptocurrency analysts have issued new price targets for {symbol.upper()}, reflecting revised expectations based on recent performance and adoption trends.",
+                "publishedAt": current_date
+            },
+            {
+                "title": f"{symbol.upper()} in focus as crypto market evaluates trends",
+                "source": {"name": "Blockchain View"},
+                "summary": f"Investors are closely watching {symbol.upper()} as a possible indicator of broader cryptocurrency market performance. Technical analysis suggests monitoring key support and resistance levels.",
+                "publishedAt": current_date
+            }
+        ]
+    else:
+        news = [
+            {
+                "title": f"{symbol.upper()} stock shows market volatility",
+                "source": {"name": "Market Insight"},
+                "summary": f"Recent trading of {symbol.upper()} demonstrates ongoing market volatility as investors respond to broader economic indicators and company-specific developments.",
+                "publishedAt": current_date
+            },
+            {
+                "title": f"Analysts issue updated guidance on {symbol.upper()}",
+                "source": {"name": "Financial Observer"},
+                "summary": f"Investment analysts have issued new price targets for {symbol.upper()}, reflecting revised expectations based on recent performance and forward outlook.",
+                "publishedAt": current_date
+            },
+            {
+                "title": f"{symbol.upper()} in focus as market evaluates sector trends",
+                "source": {"name": "Trading View"},
+                "summary": f"Investors are closely watching {symbol.upper()} as a possible indicator of broader sector performance. Technical analysis suggests watching key support and resistance levels.",
+                "publishedAt": current_date
+            }
+        ]
     return news
 
 # ---------------------------
@@ -951,7 +1107,12 @@ def generate_chart(data, symbol, forecast=None, timeframe="1day"):
                 hours = int(timeframe.replace("h", ""))
                 forecast_dates = [data.index[-1] + timedelta(hours=hours * (i+1)) for i in range(len(forecast))]
             else:
-                forecast_dates = pd.date_range(start=data.index[-1] + timedelta(days=1), periods=len(forecast), freq='B')
+                # For crypto, use calendar days instead of business days since crypto trades 24/7
+                is_crypto = is_crypto_symbol(symbol)
+                if is_crypto:
+                    forecast_dates = pd.date_range(start=data.index[-1] + timedelta(days=1), periods=len(forecast), freq='D')
+                else:
+                    forecast_dates = pd.date_range(start=data.index[-1] + timedelta(days=1), periods=len(forecast), freq='B')
             
             # Plot forecast line
             ax.plot(forecast_dates, forecast, color='#FFD700', linewidth=2, linestyle='--', marker='o', label='Forecast')
@@ -2585,12 +2746,13 @@ def generate_forecast_ohlc(data, forecast):
         return ohlc
 
 # ---------------------------
-# Build Raw Chart Data for Front-End
+# Build Raw Chart Data for Front-End (Updated with Crypto Support)
 # ---------------------------
 def get_chart_data(data, forecast, timeframe):
     """
     Build raw chart data arrays including ISO-formatted historical and forecast dates and values.
     Now includes OHLC data for both historical and forecast points and session markers.
+    Updated to handle both stocks and cryptocurrencies.
     Args:
         data (pd.DataFrame): Historical price data
         forecast (list): Forecasted prices
@@ -2616,7 +2778,8 @@ def get_chart_data(data, forecast, timeframe):
                 "forecastValues": dummy_forecast,
                 "timeframe": timeframe,
                 "timeframeDisplay": timeframe,
-                "isIntraday": timeframe.endswith('min') or timeframe.endswith('h')
+                "isIntraday": timeframe.endswith('min') or timeframe.endswith('h'),
+                "isCrypto": False
             }
             
         if "Close" not in data.columns:
@@ -2635,8 +2798,13 @@ def get_chart_data(data, forecast, timeframe):
                 "forecastValues": dummy_forecast,
                 "timeframe": timeframe,
                 "timeframeDisplay": timeframe,
-                "isIntraday": timeframe.endswith('min') or timeframe.endswith('h')
+                "isIntraday": timeframe.endswith('min') or timeframe.endswith('h'),
+                "isCrypto": False
             }
+        
+        # Determine if this is crypto
+        symbol = data.name if hasattr(data, 'name') else ""
+        is_crypto = is_crypto_symbol(symbol)
         
         # Ensure forecast is a list of floats
         if forecast is not None:
@@ -2675,9 +2843,11 @@ def get_chart_data(data, forecast, timeframe):
                     "close": float(row["Close"])
                 }
                 
-                # Add session marker if available
-                if 'session' in row:
+                # Add session marker if available (only for stocks, crypto is always 24/7)
+                if 'session' in row and not is_crypto:
                     ohlc_point["session"] = row["session"]
+                elif is_crypto:
+                    ohlc_point["session"] = "regular"  # Crypto trades 24/7
                     
                 historical_ohlc.append(ohlc_point)
         
@@ -2698,17 +2868,22 @@ def get_chart_data(data, forecast, timeframe):
                 for i in range(len(forecast))
             ]
         else:
-            forecast_dates = pd.date_range(
-                start=last_date + timedelta(days=1),
-                periods=len(forecast),
-                freq="B"
-            ).strftime("%Y-%m-%dT%H:%M:%SZ").tolist()
+            # For crypto, use calendar days instead of business days since crypto trades 24/7
+            if is_crypto:
+                forecast_dates = pd.date_range(
+                    start=last_date + timedelta(days=1),
+                    periods=len(forecast),
+                    freq="D"
+                ).strftime("%Y-%m-%dT%H:%M:%SZ").tolist()
+            else:
+                forecast_dates = pd.date_range(
+                    start=last_date + timedelta(days=1),
+                    periods=len(forecast),
+                    freq="B"
+                ).strftime("%Y-%m-%dT%H:%M:%SZ").tolist()
         
         # Generate forecast OHLC data
         forecast_ohlc = generate_forecast_ohlc(data, forecast)
-        
-        # Get symbol from DataFrame name attribute
-        symbol = data.name if hasattr(data, 'name') else ""
         
         # Determine if this is intraday data
         is_intraday = timeframe.endswith('min') or timeframe.endswith('h')
@@ -2721,8 +2896,10 @@ def get_chart_data(data, forecast, timeframe):
             "timeframe": timeframe,
             "timeframeDisplay": timeframe_display,
             "symbol": symbol,
-            "includesExtendedHours": 'session' in data.columns,
-            "isIntraday": is_intraday
+            "includesExtendedHours": 'session' in data.columns and not is_crypto,  # Crypto doesn't have extended hours
+            "isIntraday": is_intraday,
+            "isCrypto": is_crypto,
+            "tradingHours": "24/7" if is_crypto else "Market Hours"
         }
         
         # Include OHLC data if available
@@ -2750,7 +2927,8 @@ def get_chart_data(data, forecast, timeframe):
             "forecastValues": dummy_forecast,
             "timeframe": timeframe,
             "timeframeDisplay": timeframe,
-            "isIntraday": timeframe.endswith('min') or timeframe.endswith('h')
+            "isIntraday": timeframe.endswith('min') or timeframe.endswith('h'),
+            "isCrypto": False
         }
 
 # ---------------------------
@@ -3690,7 +3868,7 @@ def track_symbol_performance(symbol):
                         import traceback
                         traceback.print_exc()
 
-                                                # Try the original function as fallback
+                        # Try the original function as fallback
                         success = add_performance_tracking(
                             symbol,
                             forecast_id,
@@ -3975,7 +4153,10 @@ def process():
     risk_appetite = request.args.get("risk_appetite", "moderate")
     # Extended hours is always enabled
     include_extended_hours = True
-    print(f"Received request for symbol: {symbol} with timeframe: {timeframe}, extended hours always included")
+    
+    # Detect if this is crypto
+    is_crypto = is_crypto_symbol(symbol)
+    print(f"Received request for {'crypto' if is_crypto else 'stock'} symbol: {symbol} with timeframe: {timeframe}")
     
     try:
         # Test accessing each worksheet before processing
@@ -3999,7 +4180,7 @@ def process():
         # Use a timer to track execution time
         start_time = datetime.now()
         
-        # Fetch data with extended hours always enabled
+        # Fetch data with extended hours always enabled (stocks) or 24/7 (crypto)
         data = fetch_data(symbol, timeframe, include_extended_hours)
         
         # Verify data is valid
@@ -4118,7 +4299,7 @@ def process():
                     regime
                 )
                 
-                # NEW: Trigger performance tracking for this symbol's forecasts
+                # Trigger performance tracking for this symbol's forecasts
                 try:
                     # We'll do this in a separate thread to avoid delaying the response
                     threading.Thread(
@@ -4153,11 +4334,12 @@ def process():
                 "historicalValues": [float(x) for x in data["Close"].tolist()],
                 "forecastDates": [],
                 "forecastValues": [],
-                "isIntraday": timeframe.endswith('min') or timeframe.endswith('h')
+                "isIntraday": timeframe.endswith('min') or timeframe.endswith('h'),
+                "isCrypto": is_crypto
             }
         
-        # Add flag for extended hours
-        has_extended_hours = 'session' in data.columns
+        # Add flag for extended hours (stocks only, crypto is always 24/7)
+        has_extended_hours = 'session' in data.columns and not is_crypto
         
         # Add styling information for the chart
         chart_styling = {
@@ -4197,7 +4379,9 @@ def process():
             "chartStyling": chart_styling,
             "news": [{"title": "Loading news...", "source": {"name": "Trading System"}, "summary": "News will be available on next refresh."}],
             "openai_refined_prediction": f"Analysis for {symbol}: Based on technical analysis, the forecast suggests a trend from ${data['Close'].iloc[-1]:.2f} to ${forecast[-1]:.2f} over the {timeframe} timeframe.",
-            "includesExtendedHours": has_extended_hours
+            "includesExtendedHours": has_extended_hours,
+            "isCrypto": is_crypto,
+            "tradingHours": "24/7" if is_crypto else "Market Hours"
         }
         
         # Generate chart in the background
@@ -4276,8 +4460,9 @@ def process():
                         indicators_text += f"Trend: {indicators['trend']}, "
                 
                 # Create a detailed prompt for OpenAI
+                asset_type = "cryptocurrency" if is_crypto else "stock"
                 openai_prompt = f"""
-                Provide a detailed analysis for {symbol.upper()} in the {timeframe} timeframe.
+                Provide a detailed analysis for {symbol.upper()} {asset_type} in the {timeframe} timeframe.
                 Current Information:
                 - Current price: ${data['Close'].iloc[-1]:.2f}
                 - Forecast end price: ${forecast[-1]:.2f}
@@ -4285,10 +4470,18 @@ def process():
                 - Projected change: {price_change:.2f}%
                 - Market regime: {regime}
                 - Technical indicators: {indicators_text}
+                - Asset type: {asset_type.upper()}
                 """
                 
-                # Add extended hours info if available
-                if has_extended_hours:
+                # Add crypto-specific context
+                if is_crypto:
+                    openai_prompt += f"""
+                - Trading: 24/7 cryptocurrency market
+                - Volatility: Crypto markets typically show higher volatility than traditional stocks
+                """
+                
+                # Add extended hours info if available (stocks only)
+                if has_extended_hours and not is_crypto:
                     # Get the most recent pre-market and after-hours data
                     try:
                         # Group by date and session
@@ -4326,15 +4519,17 @@ def process():
                     except Exception as e:
                         print(f"Error preparing extended hours info for OpenAI: {e}")
                 
-                openai_prompt += """
+                openai_prompt += f"""
                 Your analysis should include:
-                1. Current market context for the stock
+                1. Current market context for the {asset_type}
                 2. Key technical levels and signals
                 3. A specific trading recommendation
                 4. Potential risks to watch for
                 """
                 
-                if has_extended_hours:
+                if is_crypto:
+                    openai_prompt += "5. Crypto-specific factors affecting the price\n"
+                elif has_extended_hours:
                     openai_prompt += "5. How extended hours trading is affecting the stock\n"
                     
                 openai_prompt += """
@@ -4348,7 +4543,7 @@ def process():
                         openai_response = openai.ChatCompletion.create(
                             model="gpt-3.5-turbo",
                             messages=[
-                                {"role": "system", "content": "You are a professional financial analyst specializing in technical analysis and market prediction."},
+                                {"role": "system", "content": f"You are a professional financial analyst specializing in technical analysis and market prediction for both traditional stocks and cryptocurrencies."},
                                 {"role": "user", "content": openai_prompt}
                             ],
                             max_tokens=500,
@@ -4469,9 +4664,11 @@ def process():
                 "historicalValues": [100.0, 101.0, 102.0, 103.0, 104.0],
                 "forecastDates": [(datetime.now() + timedelta(days=i)).strftime("%Y-%m-%dT%H:%M:%SZ") for i in range(1, 6)],
                 "forecastValues": [105.0, 106.0, 107.0, 108.0, 109.0],
-                "isIntraday": timeframe.endswith('min') or timeframe.endswith('h')
+                "isIntraday": timeframe.endswith('min') or timeframe.endswith('h'),
+                "isCrypto": is_crypto_symbol(symbol)
             },
-            "news": [{"title": "Error fetching data", "source": {"name": "Trading System"}, "summary": "We encountered an error while analyzing this symbol. Please try again later."}]
+            "news": [{"title": "Error fetching data", "source": {"name": "Trading System"}, "summary": "We encountered an error while analyzing this symbol. Please try again later."}],
+            "isCrypto": is_crypto_symbol(symbol)
         }), 200  # Return 200 even on error to prevent frontend crashes
 
 if __name__ == "__main__":
