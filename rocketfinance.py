@@ -590,59 +590,146 @@ def fetch_data(symbol, timeframe, include_extended_hours=True):
         fallback_df = create_fallback_dataframe(symbol, is_crypto)
         return fallback_df
 
+def get_current_crypto_price(symbol):
+    """
+    Try to get current crypto price from a free API as backup.
+    Returns None if unable to fetch.
+    """
+    # Map common symbols to CoinGecko IDs
+    symbol_mapping = {
+        'BTC': 'bitcoin',
+        'ETH': 'ethereum',
+        'XRP': 'ripple',
+        'ADA': 'cardano',
+        'DOT': 'polkadot',
+        'LINK': 'chainlink',
+        'LTC': 'litecoin',
+        'BCH': 'bitcoin-cash',
+        'DOGE': 'dogecoin',
+        'SOL': 'solana',
+        'MATIC': 'matic-network',
+        'AVAX': 'avalanche-2',
+        'ATOM': 'cosmos',
+        'UNI': 'uniswap',
+        'AAVE': 'aave',
+        'SUSHI': 'sushi',
+        'COMP': 'compound-governance-token',
+        'MKR': 'maker',
+        'SNX': 'havven',
+        'YFI': 'yearn-finance',
+        'CRV': 'curve-dao-token',
+        'BAL': 'balancer',
+        'ALGO': 'algorand',
+        'VET': 'vechain',
+        'TRX': 'tron',
+        'XLM': 'stellar',
+        'EOS': 'eos',
+        'NEO': 'neo',
+        'IOTA': 'iota',
+        'DASH': 'dash',
+        'ZEC': 'zcash',
+        'XMR': 'monero',
+        'ETC': 'ethereum-classic',
+        'BSV': 'bitcoin-cash-sv',
+        'USDT': 'tether',
+        'USDC': 'usd-coin',
+        'BNB': 'binancecoin',
+        'FTT': 'ftx-token',
+        'HT': 'huobi-token',
+        'OKB': 'okb',
+        'LEO': 'leo-token',
+        'CRO': 'crypto-com-chain',
+        'SHIB': 'shiba-inu'
+    }
+    
+    try:
+        # Get the CoinGecko ID for the symbol
+        coin_id = symbol_mapping.get(symbol.upper(), symbol.lower())
+        
+        # Try CoinGecko API (free, no API key required)
+        url = f"https://api.coingecko.com/api/v3/simple/price?ids={coin_id}&vs_currencies=usd"
+        response = requests.get(url, timeout=5)
+        
+        if response.status_code == 200:
+            data = response.json()
+            if coin_id in data and 'usd' in data[coin_id]:
+                return data[coin_id]['usd']
+        
+        # Fallback: Try alternative endpoint
+        url2 = f"https://api.coingecko.com/api/v3/coins/{coin_id}"
+        response2 = requests.get(url2, timeout=5)
+        
+        if response2.status_code == 200:
+            data2 = response2.json()
+            if 'market_data' in data2 and 'current_price' in data2['market_data']:
+                return data2['market_data']['current_price']['usd']
+                
+    except Exception as e:
+        print(f"Error fetching current price for {symbol}: {e}")
+    
+    return None
+
 def create_fallback_dataframe(symbol, is_crypto):
     """
     Create a realistic fallback DataFrame with appropriate prices for crypto vs stocks.
     """
     # Get realistic base prices for different assets
     if is_crypto:
-        # Use realistic crypto prices
-        base_prices = {
-            'BTC': 45000.0,
-            'ETH': 3000.0,
-            'XRP': 0.5,
-            'ADA': 0.4,
-            'DOT': 7.0,
-            'LINK': 15.0,
-            'LTC': 70.0,
-            'BCH': 250.0,
-            'DOGE': 0.08,
-            'SOL': 100.0,
-            'MATIC': 0.8,
-            'AVAX': 25.0,
-            'ATOM': 10.0,
-            'UNI': 7.0,
-            'AAVE': 200.0,
-            'SUSHI': 1.5,
-            'COMP': 50.0,
-            'MKR': 2000.0,
-            'SNX': 3.0,
-            'YFI': 8000.0,
-            'CRV': 0.5,
-            'BAL': 5.0,
-            'ALGO': 0.2,
-            'VET': 0.03,
-            'TRX': 0.08,
-            'XLM': 0.1,
-            'EOS': 0.7,
-            'NEO': 15.0,
-            'IOTA': 0.3,
-            'DASH': 30.0,
-            'ZEC': 25.0,
-            'XMR': 150.0,
-            'ETC': 20.0,
-            'BSV': 50.0,
-            'USDT': 1.0,
-            'USDC': 1.0,
-            'BNB': 300.0,
-            'FTT': 1.0,
-            'HT': 5.0,
-            'OKB': 50.0,
-            'LEO': 4.0,
-            'CRO': 0.1,
-            'SHIB': 0.00001
-        }
-        base_price = base_prices.get(symbol.upper(), 100.0)
+        # Try to get current price first
+        current_price = get_current_crypto_price(symbol)
+        
+        if current_price is not None:
+            print(f"Using real-time price for {symbol}: ${current_price:,.2f}")
+            base_price = current_price
+        else:
+            # Use realistic crypto prices (updated to current market levels)
+            base_prices = {
+                'BTC': 110000.0,  # Updated to current ~$110K
+                'ETH': 3500.0,    # Updated to current ~$3.5K
+                'XRP': 0.6,       # Updated to current ~$0.60
+                'ADA': 0.5,       # Updated to current ~$0.50
+                'DOT': 8.0,       # Updated to current ~$8
+                'LINK': 18.0,     # Updated to current ~$18
+                'LTC': 80.0,      # Updated to current ~$80
+                'BCH': 300.0,     # Updated to current ~$300
+                'DOGE': 0.15,     # Updated to current ~$0.15
+                'SOL': 150.0,     # Updated to current ~$150
+                'MATIC': 1.0,     # Updated to current ~$1
+                'AVAX': 35.0,     # Updated to current ~$35
+                'ATOM': 12.0,     # Updated to current ~$12
+                'UNI': 8.0,       # Updated to current ~$8
+                'AAVE': 250.0,    # Updated to current ~$250
+                'SUSHI': 2.0,     # Updated to current ~$2
+                'COMP': 60.0,     # Updated to current ~$60
+                'MKR': 2500.0,    # Updated to current ~$2500
+                'SNX': 4.0,       # Updated to current ~$4
+                'YFI': 10000.0,   # Updated to current ~$10K
+                'CRV': 0.6,       # Updated to current ~$0.60
+                'BAL': 6.0,       # Updated to current ~$6
+                'ALGO': 0.25,     # Updated to current ~$0.25
+                'VET': 0.04,      # Updated to current ~$0.04
+                'TRX': 0.12,      # Updated to current ~$0.12
+                'XLM': 0.15,      # Updated to current ~$0.15
+                'EOS': 0.8,       # Updated to current ~$0.80
+                'NEO': 18.0,      # Updated to current ~$18
+                'IOTA': 0.35,     # Updated to current ~$0.35
+                'DASH': 35.0,     # Updated to current ~$35
+                'ZEC': 30.0,      # Updated to current ~$30
+                'XMR': 180.0,     # Updated to current ~$180
+                'ETC': 25.0,      # Updated to current ~$25
+                'BSV': 60.0,      # Updated to current ~$60
+                'USDT': 1.0,      # Stablecoin
+                'USDC': 1.0,      # Stablecoin
+                'BNB': 400.0,     # Updated to current ~$400
+                'FTT': 1.0,       # Updated
+                'HT': 6.0,        # Updated to current ~$6
+                'OKB': 60.0,      # Updated to current ~$60
+                'LEO': 5.0,       # Updated to current ~$5
+                'CRO': 0.12,      # Updated to current ~$0.12
+                'SHIB': 0.00002   # Updated to current ~$0.00002
+            }
+            base_price = base_prices.get(symbol.upper(), 100.0)
+            print(f"Using fallback price for {symbol}: ${base_price:,.2f}")
     else:
         # Use realistic stock prices
         base_price = 50.0
@@ -2984,7 +3071,20 @@ def get_chart_data(data, forecast, timeframe):
             
             # Create realistic fallback data based on asset type
             if is_crypto:
-                base_price = 45000.0 if symbol.upper() == "BTC" else 3000.0 if symbol.upper() == "ETH" else 100.0
+                # Use current market prices for major cryptos
+                if symbol.upper() == "BTC":
+                    base_price = 110000.0
+                elif symbol.upper() == "ETH":
+                    base_price = 3500.0
+                elif symbol.upper() == "XRP":
+                    base_price = 0.6
+                elif symbol.upper() == "SOL":
+                    base_price = 150.0
+                elif symbol.upper() == "ADA":
+                    base_price = 0.5
+                else:
+                    base_price = 100.0
+                
                 dummy_values = [base_price + (i * base_price * 0.01) for i in range(5)]
                 dummy_forecast = [base_price + (i * base_price * 0.02) for i in range(1, 6)]
             else:
@@ -3014,7 +3114,20 @@ def get_chart_data(data, forecast, timeframe):
             
             # Create realistic fallback data based on asset type
             if is_crypto:
-                base_price = 45000.0 if symbol.upper() == "BTC" else 3000.0 if symbol.upper() == "ETH" else 100.0
+                # Use current market prices for major cryptos
+                if symbol.upper() == "BTC":
+                    base_price = 110000.0
+                elif symbol.upper() == "ETH":
+                    base_price = 3500.0
+                elif symbol.upper() == "XRP":
+                    base_price = 0.6
+                elif symbol.upper() == "SOL":
+                    base_price = 150.0
+                elif symbol.upper() == "ADA":
+                    base_price = 0.5
+                else:
+                    base_price = 100.0
+                
                 dummy_values = [base_price + (i * base_price * 0.01) for i in range(5)]
                 dummy_forecast = [base_price + (i * base_price * 0.02) for i in range(1, 6)]
             else:
@@ -3049,6 +3162,15 @@ def get_chart_data(data, forecast, timeframe):
             if len(data) > 0:
                 print(f"Sample Close prices: {data['Close'].head().tolist()}")
                 print(f"Close price range: {data['Close'].min():.8f} to {data['Close'].max():.8f}")
+                
+                # Check if this looks like fallback data (very low volatility)
+                if len(data) >= 2:
+                    price_changes = data['Close'].pct_change().dropna()
+                    avg_change = abs(price_changes).mean()
+                    if avg_change < 0.001:  # Less than 0.1% average change
+                        print("⚠️  WARNING: Data appears to be fallback data (very low volatility)")
+                        print(f"   Average price change: {avg_change:.6f}")
+                        print("   This suggests the Alpha Vantage API may not be returning real crypto data")
         
         # Ensure forecast is a list of floats
         if forecast is not None:
@@ -3179,7 +3301,20 @@ def get_chart_data(data, forecast, timeframe):
         
         # Create realistic fallback data based on asset type
         if is_crypto:
-            base_price = 45000.0 if symbol.upper() == "BTC" else 3000.0 if symbol.upper() == "ETH" else 100.0
+            # Use current market prices for major cryptos
+            if symbol.upper() == "BTC":
+                base_price = 110000.0
+            elif symbol.upper() == "ETH":
+                base_price = 3500.0
+            elif symbol.upper() == "XRP":
+                base_price = 0.6
+            elif symbol.upper() == "SOL":
+                base_price = 150.0
+            elif symbol.upper() == "ADA":
+                base_price = 0.5
+            else:
+                base_price = 100.0
+            
             dummy_values = [base_price + (i * base_price * 0.01) for i in range(5)]
             dummy_forecast = [base_price + (i * base_price * 0.02) for i in range(1, 6)]
         else:
