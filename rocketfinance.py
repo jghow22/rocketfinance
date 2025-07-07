@@ -250,44 +250,59 @@ def get_timeframe_display_name(timeframe):
 
 def filter_data_by_timeframe(data, timeframe, is_crypto=False):
     """
-    Filter data based on timeframe to match standard brokerage expectations.
-    This ensures the chart shows the appropriate amount of data for each timeframe.
+    Filter and aggregate data based on timeframe to match standard brokerage expectations.
+    This ensures the chart shows the appropriate amount of data with proper aggregation.
     """
     if data is None or len(data) == 0:
         return data
     
     try:
-        # Get the current time
-        now = datetime.now()
-        
-        # Define the lookback periods for each timeframe (standard brokerage style)
-        timeframe_lookbacks = {
-            "5min": timedelta(hours=4),      # 4 hours for 5min charts
-            "30min": timedelta(hours=24),    # 24 hours for 30min charts
-            "2h": timedelta(days=7),         # 7 days for 2h charts
-            "4h": timedelta(days=14),        # 14 days for 4h charts
-            "1day": timedelta(days=90),      # 90 days for daily charts
-            "7day": timedelta(days=365),     # 1 year for weekly charts
-            "1mo": timedelta(days=365*2),    # 2 years for monthly charts
-            "3mo": timedelta(days=365*3),    # 3 years for quarterly charts
-            "1yr": timedelta(days=365*5)     # 5 years for yearly charts
+        # Define the target number of bars for each timeframe (standard brokerage style)
+        target_bars = {
+            "5min": 288,      # 24 hours worth of 5-minute bars
+            "30min": 96,      # 48 hours worth of 30-minute bars
+            "2h": 84,         # 7 days worth of 2-hour bars
+            "4h": 84,         # 14 days worth of 4-hour bars
+            "1day": 252,      # 1 year of trading days
+            "7day": 52,       # 1 year of weeks
+            "1mo": 24,        # 2 years of months
+            "3mo": 20,        # 5 years of quarters
+            "1yr": 10         # 10 years of years
         }
         
-        # Get the lookback period for this timeframe
-        lookback = timeframe_lookbacks.get(timeframe, timedelta(days=90))
+        target_count = target_bars.get(timeframe, 252)
         
-        # Calculate the start date
-        start_date = now - lookback
-        
-        # Filter the data to only include data from the start_date onwards
-        filtered_data = data[data.index >= start_date]
-        
-        # Ensure we have at least some data points
-        if len(filtered_data) < 10:
-            # If we don't have enough data, use the original data but limit to reasonable amount
-            if len(data) > 100:
-                # Take the last 100 data points if we have too much
-                filtered_data = data.tail(100)
+        # For intraday timeframes, we need to resample the data
+        if timeframe in ["5min", "30min", "2h", "4h"]:
+            # Resample to the correct timeframe
+            resample_rules = {
+                "5min": "5T",
+                "30min": "30T", 
+                "2h": "2H",
+                "4h": "4H"
+            }
+            
+            resample_rule = resample_rules.get(timeframe, "1D")
+            
+            # Resample the data
+            resampled = data.resample(resample_rule).agg({
+                'Open': 'first',
+                'High': 'max', 
+                'Low': 'min',
+                'Close': 'last',
+                'Volume': 'sum'
+            }).dropna()
+            
+            # Take the last N bars
+            if len(resampled) > target_count:
+                filtered_data = resampled.tail(target_count)
+            else:
+                filtered_data = resampled
+                
+        else:
+            # For daily and above, use the data as-is but limit to target count
+            if len(data) > target_count:
+                filtered_data = data.tail(target_count)
             else:
                 filtered_data = data
         
