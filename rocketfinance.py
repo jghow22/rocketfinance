@@ -231,6 +231,75 @@ def get_stock_info(symbol):
         print(f"Error validating stock symbol {symbol}: {e}")
         return None
 
+def get_timeframe_display_name(timeframe):
+    """
+    Convert timeframe codes to user-friendly display names.
+    """
+    timeframe_map = {
+        "5min": "5 Minute",
+        "30min": "30 Minute", 
+        "2h": "2 Hour",
+        "4h": "4 Hour",
+        "1day": "Daily",
+        "7day": "Weekly",
+        "1mo": "Monthly",
+        "3mo": "Quarterly",
+        "1yr": "Yearly"
+    }
+    return timeframe_map.get(timeframe, timeframe)
+
+def filter_data_by_timeframe(data, timeframe, is_crypto=False):
+    """
+    Filter data based on timeframe to match standard brokerage expectations.
+    This ensures the chart shows the appropriate amount of data for each timeframe.
+    """
+    if data is None or len(data) == 0:
+        return data
+    
+    try:
+        # Get the current time
+        now = datetime.now()
+        
+        # Define the lookback periods for each timeframe (standard brokerage style)
+        timeframe_lookbacks = {
+            "5min": timedelta(hours=4),      # 4 hours for 5min charts
+            "30min": timedelta(hours=24),    # 24 hours for 30min charts
+            "2h": timedelta(days=7),         # 7 days for 2h charts
+            "4h": timedelta(days=14),        # 14 days for 4h charts
+            "1day": timedelta(days=90),      # 90 days for daily charts
+            "7day": timedelta(days=365),     # 1 year for weekly charts
+            "1mo": timedelta(days=365*2),    # 2 years for monthly charts
+            "3mo": timedelta(days=365*3),    # 3 years for quarterly charts
+            "1yr": timedelta(days=365*5)     # 5 years for yearly charts
+        }
+        
+        # Get the lookback period for this timeframe
+        lookback = timeframe_lookbacks.get(timeframe, timedelta(days=90))
+        
+        # Calculate the start date
+        start_date = now - lookback
+        
+        # Filter the data to only include data from the start_date onwards
+        filtered_data = data[data.index >= start_date]
+        
+        # Ensure we have at least some data points
+        if len(filtered_data) < 10:
+            # If we don't have enough data, use the original data but limit to reasonable amount
+            if len(data) > 100:
+                # Take the last 100 data points if we have too much
+                filtered_data = data.tail(100)
+            else:
+                filtered_data = data
+        
+        print(f"Filtered data for {timeframe}: {len(filtered_data)} data points from {filtered_data.index[0]} to {filtered_data.index[-1]}")
+        
+        return filtered_data
+        
+    except Exception as e:
+        print(f"Error filtering data by timeframe: {e}")
+        # Return original data if filtering fails
+        return data
+
 # ---------------------------
 # Data Fetching from Alpha Vantage (Updated with Crypto Support)
 # ---------------------------
@@ -3437,20 +3506,14 @@ def get_chart_data(data, forecast, timeframe):
         else:
             forecast = []
         
-        historical_dates = data.index.strftime("%Y-%m-%dT%H:%M:%SZ").tolist()
-        historical_values = [float(val) for val in data["Close"].tolist()]
+        # Filter data based on timeframe to match standard brokerage expectations
+        filtered_data = filter_data_by_timeframe(data, timeframe, is_crypto)
+        
+        historical_dates = filtered_data.index.strftime("%Y-%m-%dT%H:%M:%SZ").tolist()
+        historical_values = [float(val) for val in filtered_data["Close"].tolist()]
         
         # Add timeframe display name for better frontend formatting
-        timeframe_display = timeframe
-        if timeframe == "1day": timeframe_display = "Daily"
-        elif timeframe == "7day": timeframe_display = "Weekly"
-        elif timeframe == "1mo": timeframe_display = "Monthly"
-        elif timeframe == "3mo": timeframe_display = "Quarterly"
-        elif timeframe == "1yr": timeframe_display = "Yearly"
-        elif timeframe == "5min": timeframe_display = "5 Minute"
-        elif timeframe == "30min": timeframe_display = "30 Minute"
-        elif timeframe == "2h": timeframe_display = "2 Hour"
-        elif timeframe == "4h": timeframe_display = "4 Hour"
+        timeframe_display = get_timeframe_display_name(timeframe)
         
         # Debug log the values to verify data
         print(f"Sample historical values: {historical_values[:5]}")
@@ -3472,11 +3535,11 @@ def get_chart_data(data, forecast, timeframe):
                 if price_volatility > 0.5:  # More than 50% movement
                     print("WARNING: Very high crypto price volatility detected - possible data issue")
         
-        # Add OHLC data if available
+        # Add OHLC data if available (use filtered data)
         historical_ohlc = None
-        if {"Open", "High", "Low", "Close"}.issubset(data.columns):
+        if {"Open", "High", "Low", "Close"}.issubset(filtered_data.columns):
             historical_ohlc = []
-            for i, (_, row) in enumerate(data.iterrows()):
+            for i, (_, row) in enumerate(filtered_data.iterrows()):
                 ohlc_point = {
                     "open": float(row["Open"]),
                     "high": float(row["High"]),
@@ -3492,8 +3555,8 @@ def get_chart_data(data, forecast, timeframe):
                     
                 historical_ohlc.append(ohlc_point)
         
-        # Generate forecast dates with proper ISO format
-        last_date = data.index[-1]
+        # Generate forecast dates with proper ISO format (use filtered data's last date)
+        last_date = filtered_data.index[-1]
         if timeframe.endswith("min"):
             minutes = int(timeframe.replace("min", ""))
             delta = timedelta(minutes=minutes)
@@ -3523,8 +3586,8 @@ def get_chart_data(data, forecast, timeframe):
                     freq="B"
                 ).strftime("%Y-%m-%dT%H:%M:%SZ").tolist()
         
-        # Generate forecast OHLC data
-        forecast_ohlc = generate_forecast_ohlc(data, forecast)
+        # Generate forecast OHLC data (use filtered data for better accuracy)
+        forecast_ohlc = generate_forecast_ohlc(filtered_data, forecast)
         
         # Determine if this is intraday data
         is_intraday = timeframe.endswith('min') or timeframe.endswith('h')
@@ -3537,7 +3600,7 @@ def get_chart_data(data, forecast, timeframe):
             "timeframe": timeframe,
             "timeframeDisplay": timeframe_display,
             "symbol": symbol,
-            "includesExtendedHours": 'session' in data.columns and not is_crypto,  # Crypto doesn't have extended hours
+            "includesExtendedHours": 'session' in filtered_data.columns and not is_crypto,  # Crypto doesn't have extended hours
             "isIntraday": is_intraday,
             "isCrypto": is_crypto,
             "tradingHours": "24/7" if is_crypto else "Market Hours",
