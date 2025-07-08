@@ -708,7 +708,7 @@ def fetch_data(symbol, timeframe, include_extended_hours=True):
                         df = df[df[col] >= median_price / 10]  # Also remove extremely low values
         
         # Localize timezone if needed
-        if df.index.tz is None:
+        if hasattr(df.index, 'tz') and df.index.tz is None:
             df.index = df.index.tz_localize("UTC")
         
         # Limit data based on timeframe with more data for intraday
@@ -813,9 +813,9 @@ def validate_data_freshness(df, symbol, timeframe, is_crypto=False):
     current_time = datetime.now()
     
     # Convert to same timezone for comparison
-    if latest_time.tz is None:
+    if hasattr(latest_time, 'tz') and latest_time.tz is None:
         latest_time = latest_time.tz_localize('UTC')
-    if current_time.tz is None:
+    if hasattr(current_time, 'tz') and current_time.tz is None:
         current_time = current_time.replace(tzinfo=timezone.utc)
     
     time_diff = (current_time - latest_time).total_seconds() / 3600  # hours
@@ -876,9 +876,9 @@ def enhance_data_with_realtime_price(df, symbol, is_crypto=False):
             current_time = datetime.now()
             
             # Convert to same timezone for comparison
-            if latest_time.tz is None:
+            if hasattr(latest_time, 'tz') and latest_time.tz is None:
                 latest_time = latest_time.tz_localize('UTC')
-            if current_time.tz is None:
+            if hasattr(current_time, 'tz') and current_time.tz is None:
                 current_time = current_time.replace(tzinfo=timezone.utc)
             
             time_diff = (current_time - latest_time).total_seconds() / 60  # minutes
@@ -1240,9 +1240,9 @@ def mark_extended_hours(data):
         df.index = pd.to_datetime(df.index)
     
     # Ensure timezone info is present
-    if df.index.tz is None:
+    if hasattr(df.index, 'tz') and df.index.tz is None:
         df.index = df.index.tz_localize('America/New_York')
-    elif str(df.index.tz) != 'America/New_York':
+    elif hasattr(df.index, 'tz') and str(df.index.tz) != 'America/New_York':
         df.index = df.index.tz_convert('America/New_York')
     
     # Extract time info
@@ -1940,7 +1940,7 @@ def create_arima_model(data):
             data.index = pd.to_datetime(data.index)
         
         # Remove timezone info if present (ARIMA doesn't handle it well)
-        if data.index.tz is not None:
+        if hasattr(data.index, 'tz') and data.index.tz is not None:
             data = data.copy()
             data.index = data.index.tz_localize(None)
         
@@ -5123,6 +5123,9 @@ def process():
             # Continue processing even if validation fails
     
     try:
+        print(f"Starting analysis for {symbol} with timeframe {timeframe}")
+        print(f"Symbol type: {'crypto' if is_crypto else 'stock'}")
+        
         # Test accessing each worksheet before processing
         if sheets_db is not None:
             try:
@@ -5146,7 +5149,16 @@ def process():
         
         # Fetch data with extended hours always enabled (stocks) or 24/7 (crypto)
         print(f"Fetching data for {symbol} ({timeframe})...")
-        data = fetch_data(symbol, timeframe, include_extended_hours)
+        try:
+            data = fetch_data(symbol, timeframe, include_extended_hours)
+            print(f"Data fetch completed. Data type: {type(data)}")
+            if data is not None:
+                print(f"Data shape: {data.shape if hasattr(data, 'shape') else 'No shape'}")
+        except Exception as fetch_error:
+            print(f"Error during data fetch: {fetch_error}")
+            import traceback
+            traceback.print_exc()
+            data = None
         
         # Verify data is valid
         if data is None or len(data) == 0:
@@ -5193,9 +5205,12 @@ def process():
             data = pd.concat([dummy_data, data])
         
         # Generate enhanced forecast with more robust error handling
+        print("Starting forecast generation...")
         try:
             # Use the new market-aware forecast with all improvements
+            print("Attempting market-aware forecast...")
             forecast = market_aware_forecast(data, periods=5, timeframe=timeframe, symbol=symbol)
+            print(f"Market-aware forecast result: {forecast}")
             if forecast is None or len(forecast) == 0:
                 raise ValueError("market_aware_forecast returned None or empty forecast")
         except Exception as e:
@@ -5388,11 +5403,15 @@ def process():
 
         
         # Generate chart in the background
+        print("Generating chart...")
         try:
             chart_path = generate_chart(data, symbol, forecast=forecast, timeframe=timeframe)
+            print(f"Chart generated successfully: {chart_path}")
             response["chart_path"] = chart_path
         except Exception as e:
             print(f"Error generating chart: {e}")
+            import traceback
+            traceback.print_exc()
             response["chart_path"] = None
         
         # Check time elapsed and prioritize remaining operations
@@ -5404,38 +5423,49 @@ def process():
         
         # Now process additional data in order of importance
         # 1. Technical indicators
+        print("Calculating technical indicators...")
         technical_indicators_dict = None
         try:
             data_with_indicators = calculate_technical_indicators(data)
             key_indicators = extract_key_indicators(data_with_indicators)
+            print(f"Technical indicators calculated: {key_indicators}")
             if key_indicators:
                 response["key_indicators"] = key_indicators
                 technical_indicators_dict = key_indicators
         except Exception as e:
             print(f"Error calculating indicators: {e}")
+            import traceback
+            traceback.print_exc()
             data_with_indicators = data.copy()
         
         # 2. News data
         elapsed = (datetime.now() - start_time).total_seconds()
         sentiment_analysis_result = None
         if elapsed < 18:  # Still have time
+            print("Fetching news...")
             try:
                 news = fetch_news(symbol, max_items=news_count)
+                print(f"News fetched: {len(news) if news else 0} articles")
                 if news:
                     response["news"] = news
             except Exception as e:
                 print(f"Error fetching news: {e}")
+                import traceback
+                traceback.print_exc()
         
         # 3. Market regime detection
         elapsed = (datetime.now() - start_time).total_seconds()
         regime = "unknown"
         if elapsed < 20:  # Still have time
+            print("Detecting market regime...")
             try:
                 regime = detect_market_regime(data)
                 response["market_regime"] = regime
                 print(f"Detected market regime: {regime}")
             except Exception as e:
                 print(f"Error detecting market regime: {e}")
+                import traceback
+                traceback.print_exc()
         
         # 4. Generate AI analysis - ALWAYS try to use OpenAI
         elapsed = (datetime.now() - start_time).total_seconds()
@@ -5582,8 +5612,10 @@ def process():
         # 5. Generate trading signals
         elapsed = (datetime.now() - start_time).total_seconds()
         if elapsed < 28:  # Still have time
+            print("Generating trading signals...")
             try:
                 signals = generate_trading_signals(data_with_indicators, risk_appetite)
+                print(f"Trading signals generated: {signals}")
                 response["trading_signals"] = signals
                 
                 # Store signal in Google Sheets if applicable
@@ -5620,16 +5652,21 @@ def process():
         # 6. Generate sentiment analysis if time permits
         elapsed = (datetime.now() - start_time).total_seconds()
         if elapsed < 30:  # Still have time
+            print("Analyzing sentiment...")
             try:
                 sentiment = analyze_news_sentiment(symbol)
+                print(f"Sentiment analysis result: {sentiment}")
                 if sentiment:
                     response["sentiment_analysis"] = sentiment
                     sentiment_analysis_result = sentiment
             except Exception as e:
                 print(f"Error analyzing sentiment: {e}")
+                import traceback
+                traceback.print_exc()
         
         # 7. Store market analysis in Google Sheets
         if sheets_db is not None and technical_indicators_dict is not None:
+            print("Storing market analysis in Google Sheets...")
             try:
                 # Get sentiment score if available
                 sentiment_score = None
@@ -5645,8 +5682,11 @@ def process():
                     regime,
                     openai_analysis_text
                 )
+                print("Market analysis stored successfully")
             except Exception as e:
                 print(f"Error storing market analysis in Google Sheets: {e}")
+                import traceback
+                traceback.print_exc()
         
         # Remove temporary date column if it exists
         if 'date' in data.columns:
@@ -5654,6 +5694,7 @@ def process():
         
         # Return the response with whatever we managed to calculate
         print(f"Total processing time: {(datetime.now() - start_time).total_seconds():.2f}s")
+        print(f"Final response keys: {list(response.keys())}")
         
         # Add cache-busting headers to prevent browser caching issues
         response_obj = jsonify(response)
@@ -5661,9 +5702,11 @@ def process():
         response_obj.headers['Pragma'] = 'no-cache'
         response_obj.headers['Expires'] = '0'
         
+        print("Response prepared successfully")
         return response_obj
     except Exception as e:
         print(f"Error processing request: {e}")
+        print(f"Error type: {type(e).__name__}")
         import traceback
         traceback.print_exc()
         
