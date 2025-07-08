@@ -6,7 +6,7 @@ from flask import Flask, jsonify, request
 from flask_cors import CORS
 import matplotlib.pyplot as plt
 from statsmodels.tsa.arima.model import ARIMA
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import numpy as np
 from sklearn.linear_model import LinearRegression, Ridge
 from sklearn.ensemble import GradientBoostingRegressor
@@ -323,6 +323,7 @@ def fetch_data(symbol, timeframe, include_extended_hours=True):
     Fetch stock or crypto data for a symbol from Alpha Vantage with better error handling.
     Now supports both stocks and cryptocurrencies with improved crypto handling.
     Enhanced to work with all valid stock symbols.
+    Improved to ensure fresh data and proper after-hours coverage.
     """
     api_key = os.getenv("ALPHAVANTAGE_API_KEY")
     if not api_key:
@@ -343,14 +344,24 @@ def fetch_data(symbol, timeframe, include_extended_hours=True):
     is_crypto = is_crypto_symbol(symbol)
     market = "USD"  # Default market for crypto
     
-    # Check cache first
+    # Check cache first with shorter cache times for intraday data
     cache_key = f"{symbol.upper()}:{timeframe}:{include_extended_hours}:{is_crypto}"
     if cache_key in cache:
         timestamp, data = cache[cache_key]
         age = (datetime.now() - timestamp).total_seconds()
-        if age < 300:  # 5 minutes cache
+        
+        # Shorter cache times for intraday data to ensure freshness
+        intraday_options = ["5min", "30min", "2h", "4h"]
+        if timeframe in intraday_options:
+            max_cache_age = 60  # 1 minute for intraday data
+        else:
+            max_cache_age = 300  # 5 minutes for daily/weekly/monthly data
+        
+        if age < max_cache_age:
             print(f"Using cached data for {symbol} {timeframe} ({'crypto' if is_crypto else 'stock'}) (age: {age:.1f}s)")
             return data
+        else:
+            print(f"Cache expired for {symbol} {timeframe} (age: {age:.1f}s), fetching fresh data")
     
     # Determine the appropriate function and parameters based on timeframe and asset type
     intraday_options = ["5min", "30min", "2h", "4h"]
@@ -393,10 +404,11 @@ def fetch_data(symbol, timeframe, include_extended_hours=True):
                 
                 print(f"Fetching crypto {timeframe} data for {symbol}")
         else:
-            # Stock data fetching (existing logic)
+            # Stock data fetching with improved parameters for fresh data
             if timeframe in intraday_options:
                 base_interval = "60min" if timeframe in ["2h", "4h"] else timeframe
                 function = "TIME_SERIES_INTRADAY"
+                # Always use "full" for intraday to get maximum data points
                 outputsize = "full"
                 params = {
                     "function": function,
@@ -413,6 +425,7 @@ def fetch_data(symbol, timeframe, include_extended_hours=True):
                 # For daily data
                 function = "TIME_SERIES_DAILY"
                 if timeframe == "1day":
+                    # Use "full" for daily data to get maximum historical data
                     outputsize = "full"
                     params = {
                         "function": function,
@@ -446,7 +459,7 @@ def fetch_data(symbol, timeframe, include_extended_hours=True):
         
         for attempt in range(max_retries):
             try:
-                response = requests.get("https://www.alphavantage.co/query", params=params, timeout=10)
+                response = requests.get("https://www.alphavantage.co/query", params=params, timeout=15)  # Increased timeout
                 
                 print(f"Alpha Vantage API response status code: {response.status_code}")
                 
@@ -556,6 +569,21 @@ def fetch_data(symbol, timeframe, include_extended_hours=True):
         df = pd.DataFrame.from_dict(ts_data, orient="index")
         df.index = pd.to_datetime(df.index)
         df.sort_index(inplace=True)
+        
+        # Validate data freshness for intraday data
+        if timeframe in intraday_options and not is_crypto:
+            # Check if the latest data point is recent (within last 2 hours for intraday)
+            latest_time = df.index[-1]
+            current_time = datetime.now()
+            time_diff = (current_time - latest_time).total_seconds() / 3600  # hours
+            
+            if time_diff > 2:
+                print(f"Warning: Latest data point is {time_diff:.1f} hours old. Data may be stale.")
+                # For stale intraday data, try to get more recent data
+                if cache_key in cache:
+                    print("Using older cached data as it may be more recent")
+                    _, old_data = cache[cache_key]
+                    return old_data
         
         # Rename columns to maintain consistent OHLC structure
         if is_crypto:
@@ -684,15 +712,15 @@ def fetch_data(symbol, timeframe, include_extended_hours=True):
         if df.index.tz is None:
             df.index = df.index.tz_localize("UTC")
         
-        # Limit data based on timeframe
+        # Limit data based on timeframe with more data for intraday
         if timeframe == "5min":
-            df = df.iloc[-min(250, len(df)):]
+            df = df.iloc[-min(500, len(df)):]  # More data for 5min
         elif timeframe == "30min":
-            df = df.iloc[-min(250, len(df)):]
+            df = df.iloc[-min(400, len(df)):]  # More data for 30min
         elif timeframe == "2h":
-            df = df.iloc[-min(200, len(df)):]
+            df = df.iloc[-min(300, len(df)):]  # More data for 2h
         elif timeframe == "4h":
-            df = df.iloc[-min(200, len(df)):]
+            df = df.iloc[-min(250, len(df)):]  # More data for 4h
         elif timeframe == "7day":
             df = df.iloc[-min(104, len(df)):]  # ~2 years
         elif timeframe == "1mo":
@@ -731,11 +759,24 @@ def fetch_data(symbol, timeframe, include_extended_hours=True):
         # Add symbol as name
         df.name = symbol.upper()
         
-        # Store in cache
+        # Store in cache with appropriate TTL
         cache[cache_key] = (datetime.now(), df)
         
         print(f"Successfully fetched {'crypto' if is_crypto else 'stock'} data for {symbol}, shape: {df.shape}")
-        print(f"Sample data: {df.head()}")
+        print(f"Data range: {df.index[0]} to {df.index[-1]}")
+        print(f"Latest data point: {df.index[-1]} (${df['Close'].iloc[-1]:.2f})")
+        
+        # Log data quality metrics
+        if len(df) > 0:
+            price_change = ((df['Close'].iloc[-1] - df['Close'].iloc[0]) / df['Close'].iloc[0]) * 100
+            print(f"Price change over period: {price_change:.2f}%")
+            print(f"Data points per day: {len(df) / max(1, (df.index[-1] - df.index[0]).days):.1f}")
+            
+            # Check for extended hours data
+            if 'session' in df.columns:
+                session_counts = df['session'].value_counts()
+                print(f"Trading sessions: {dict(session_counts)}")
+        
         return df
         
     except Exception as e:
@@ -753,6 +794,136 @@ def fetch_data(symbol, timeframe, include_extended_hours=True):
         print("Creating fallback empty DataFrame after exception")
         fallback_df = create_fallback_dataframe(symbol, is_crypto)
         return fallback_df
+
+def validate_data_freshness(df, symbol, timeframe, is_crypto=False):
+    """
+    Validate that the data is fresh and current.
+    Args:
+        df (pd.DataFrame): DataFrame with datetime index
+        symbol (str): Symbol being analyzed
+        timeframe (str): Timeframe of the data
+        is_crypto (bool): Whether this is crypto data
+    Returns:
+        bool: True if data is fresh, False otherwise
+    """
+    if df is None or len(df) == 0:
+        print(f"Data validation failed: DataFrame is None or empty for {symbol}")
+        return False
+    
+    latest_time = df.index[-1]
+    current_time = datetime.now()
+    
+    # Convert to same timezone for comparison
+    if latest_time.tz is None:
+        latest_time = latest_time.tz_localize('UTC')
+    if current_time.tz is None:
+        current_time = current_time.replace(tzinfo=timezone.utc)
+    
+    time_diff = (current_time - latest_time).total_seconds() / 3600  # hours
+    
+    # Different freshness requirements based on timeframe and asset type
+    intraday_options = ["5min", "30min", "2h", "4h"]
+    
+    if is_crypto:
+        # Crypto trades 24/7, so data should be very recent
+        if timeframe in intraday_options:
+            max_age = 0.5  # 30 minutes for crypto intraday
+        else:
+            max_age = 2.0  # 2 hours for crypto daily/weekly/monthly
+    else:
+        # Stock data freshness requirements
+        if timeframe in intraday_options:
+            max_age = 2.0  # 2 hours for stock intraday
+        else:
+            max_age = 24.0  # 24 hours for stock daily/weekly/monthly
+    
+    is_fresh = time_diff <= max_age
+    
+    print(f"Data freshness check for {symbol} ({timeframe}):")
+    print(f"  Latest data point: {latest_time}")
+    print(f"  Current time: {current_time}")
+    print(f"  Age: {time_diff:.2f} hours")
+    print(f"  Max allowed age: {max_age:.1f} hours")
+    print(f"  Data is {'FRESH' if is_fresh else 'STALE'}")
+    
+    if not is_fresh:
+        print(f"  WARNING: Data for {symbol} may be stale. Consider refreshing.")
+    
+    return is_fresh
+
+def enhance_data_with_realtime_price(df, symbol, is_crypto=False):
+    """
+    Enhance the DataFrame with the most recent price data.
+    This helps ensure the latest price is included even if the main data source is slightly stale.
+    Args:
+        df (pd.DataFrame): DataFrame with OHLC data
+        symbol (str): Symbol being analyzed
+        is_crypto (bool): Whether this is crypto data
+    Returns:
+        pd.DataFrame: Enhanced DataFrame with updated latest price
+    """
+    if df is None or len(df) == 0:
+        return df
+    
+    try:
+        # Get current price
+        if is_crypto:
+            current_price = get_current_crypto_price(symbol)
+        else:
+            current_price = get_current_stock_price(symbol)
+        
+        if current_price is not None:
+            latest_time = df.index[-1]
+            current_time = datetime.now()
+            
+            # Convert to same timezone for comparison
+            if latest_time.tz is None:
+                latest_time = latest_time.tz_localize('UTC')
+            if current_time.tz is None:
+                current_time = current_time.replace(tzinfo=timezone.utc)
+            
+            time_diff = (current_time - latest_time).total_seconds() / 60  # minutes
+            
+            # If the latest data is more than 5 minutes old, add a new data point
+            if time_diff > 5:
+                print(f"Adding real-time price update for {symbol}: ${current_price:.2f}")
+                
+                # Create a new row with the current price
+                new_row = pd.DataFrame({
+                    'Open': [current_price],
+                    'High': [current_price],
+                    'Low': [current_price],
+                    'Close': [current_price],
+                    'Volume': [0]  # No volume data for real-time price
+                }, index=[current_time])
+                
+                # Add session info if it exists
+                if 'session' in df.columns:
+                    # Determine session based on current time
+                    current_hour = current_time.hour
+                    if 4 <= current_hour < 9.5:  # Pre-market
+                        new_row['session'] = 'pre-market'
+                    elif 9.5 <= current_hour < 16:  # Regular hours
+                        new_row['session'] = 'regular'
+                    elif 16 <= current_hour < 20:  # After-hours
+                        new_row['session'] = 'after-hours'
+                    else:  # Late after-hours
+                        new_row['session'] = 'after-hours'
+                
+                # Append the new row
+                df = pd.concat([df, new_row])
+                df.sort_index(inplace=True)
+                
+                print(f"Enhanced data with real-time price: {current_time} - ${current_price:.2f}")
+            else:
+                print(f"Data is recent enough ({time_diff:.1f} minutes old), no real-time update needed")
+        else:
+            print(f"Could not fetch real-time price for {symbol}")
+            
+    except Exception as e:
+        print(f"Error enhancing data with real-time price: {e}")
+    
+    return df
 
 def get_current_crypto_price(symbol):
     """
@@ -833,6 +1004,39 @@ def get_current_crypto_price(symbol):
     
     return None
 
+def get_current_stock_price(symbol):
+    """
+    Try to get current stock price from a free API as backup.
+    Returns None if unable to fetch.
+    """
+    try:
+        # Try Yahoo Finance API (free, no API key required)
+        url = f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}?interval=1m&range=1d"
+        response = requests.get(url, timeout=5)
+        
+        if response.status_code == 200:
+            data = response.json()
+            if 'chart' in data and 'result' in data['chart'] and data['chart']['result']:
+                result = data['chart']['result'][0]
+                if 'meta' in result and 'regularMarketPrice' in result['meta']:
+                    return result['meta']['regularMarketPrice']
+        
+        # Fallback: Try Alpha Vantage quote endpoint
+        api_key = os.getenv("ALPHAVANTAGE_API_KEY")
+        if api_key:
+            url2 = f"https://www.alphavantage.co/query?function=GLOBAL_QUOTE&symbol={symbol}&apikey={api_key}"
+            response2 = requests.get(url2, timeout=5)
+            
+            if response2.status_code == 200:
+                data2 = response2.json()
+                if 'Global Quote' in data2 and '05. price' in data2['Global Quote']:
+                    return float(data2['Global Quote']['05. price'])
+                    
+    except Exception as e:
+        print(f"Error fetching current stock price for {symbol}: {e}")
+    
+    return None
+
 def create_fallback_dataframe(symbol, is_crypto):
     """
     Create a realistic fallback DataFrame with appropriate prices for crypto vs stocks.
@@ -895,8 +1099,15 @@ def create_fallback_dataframe(symbol, is_crypto):
             base_price = base_prices.get(symbol.upper(), 100.0)
             print(f"Using fallback price for {symbol}: ${base_price:,.2f}")
     else:
-        # Use realistic stock prices
-        base_price = 50.0
+        # Try to get current stock price first
+        current_price = get_current_stock_price(symbol)
+        
+        if current_price is not None:
+            print(f"Using real-time price for {symbol}: ${current_price:,.2f}")
+            base_price = current_price
+        else:
+            # Use realistic stock prices
+            base_price = 50.0
     
     # Create realistic price movement
     dates = pd.date_range(start=datetime.now()-timedelta(days=5), periods=5, freq='D')
@@ -1016,6 +1227,7 @@ def clean_crypto_data(df, symbol):
 def mark_extended_hours(data):
     """
     Mark data points as regular hours, pre-market, or after-hours.
+    Enhanced to better capture extended hours trading data.
     Args:
         data (pd.DataFrame): DataFrame with datetime index
     Returns:
@@ -1037,7 +1249,7 @@ def mark_extended_hours(data):
     # Extract time info
     times = df.index.time
     
-    # Define market hours
+    # Define market hours with extended coverage
     pre_market_start = pd.to_datetime('04:00:00').time()
     market_open = pd.to_datetime('09:30:00').time()
     market_close = pd.to_datetime('16:00:00').time()
@@ -1050,6 +1262,16 @@ def mark_extended_hours(data):
     # Mark after-hours (4:00 PM to 8:00 PM ET)
     after_hours_mask = [(t >= market_close and t <= after_hours_end) for t in times]
     df.loc[after_hours_mask, 'session'] = 'after-hours'
+    
+    # Count sessions for debugging
+    session_counts = df['session'].value_counts()
+    print(f"Session breakdown: {dict(session_counts)}")
+    
+    # Verify we have extended hours data
+    if 'pre-market' in session_counts or 'after-hours' in session_counts:
+        print(f"Extended hours data detected: {session_counts.get('pre-market', 0)} pre-market, {session_counts.get('after-hours', 0)} after-hours")
+    else:
+        print("No extended hours data detected - this may indicate data source limitations")
     
     return df
 
@@ -4904,6 +5126,16 @@ def process():
             print(f"Successfully fetched {len(data)} data points for {symbol}")
             print(f"Data range: {data.index[0]} to {data.index[-1]}")
             print(f"Price range: ${data['Close'].min():.2f} to ${data['Close'].max():.2f}")
+            
+            # Validate data freshness
+            is_fresh = validate_data_freshness(data, symbol, timeframe, is_crypto)
+            if not is_fresh:
+                print(f"WARNING: Data for {symbol} may be stale. This could affect analysis accuracy.")
+                # Enhance data with real-time price updates
+                data = enhance_data_with_realtime_price(data, symbol, is_crypto)
+            else:
+                # Even for fresh data, try to enhance with real-time price
+                data = enhance_data_with_realtime_price(data, symbol, is_crypto)
         
         # Make sure data has the minimum required columns
         required_columns = ["Open", "High", "Low", "Close"]
