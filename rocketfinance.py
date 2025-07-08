@@ -5667,10 +5667,30 @@ def process():
                 max_retries = 2
                 for attempt in range(max_retries):
                     try:
-                        # Use the new OpenAI client API
-                        from openai import OpenAI
-                        client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+                        # Use the OpenAI client API with proper error handling
+                        try:
+                            from openai import OpenAI
+                            client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+                        except ImportError:
+                            # Fallback for older versions
+                            import openai
+                            openai.api_key = os.getenv("OPENAI_API_KEY")
+                            # Use the old API format
+                            openai_response = openai.ChatCompletion.create(
+                                model="gpt-3.5-turbo",
+                                messages=[
+                                    {"role": "system", "content": f"You are a professional financial analyst specializing in technical analysis and market prediction for both traditional stocks and cryptocurrencies."},
+                                    {"role": "user", "content": openai_prompt}
+                                ],
+                                max_tokens=500,
+                                temperature=0.7
+                            )
+                            openai_analysis_text = openai_response.choices[0].message.content
+                            response["openai_refined_prediction"] = openai_analysis_text
+                            print("Successfully generated OpenAI analysis using legacy API")
+                            break
                         
+                        # Use the new API format
                         openai_response = client.chat.completions.create(
                             model="gpt-3.5-turbo",
                             messages=[
@@ -5683,7 +5703,7 @@ def process():
                         
                         openai_analysis_text = openai_response.choices[0].message.content
                         response["openai_refined_prediction"] = openai_analysis_text
-                        print("Successfully generated OpenAI analysis")
+                        print("Successfully generated OpenAI analysis using new API")
                         break
                     except Exception as e:
                         print(f"OpenAI API error (attempt {attempt+1}/{max_retries}): {e}")
@@ -5693,12 +5713,22 @@ def process():
             except Exception as e:
                 print(f"Error generating AI analysis: {e}")
                 # Don't provide a fallback - make it clear there was an issue with OpenAI
-                openai_analysis_text = f"""
-                # OpenAI Analysis Unavailable
-                We're unable to provide an AI-powered analysis for {symbol.upper()} at this time.
-                **Reason:** {str(e)}
-                Please ensure your OPENAI_API_KEY environment variable is correctly set and try again.
-                """
+                # Provide a more helpful error message
+                if "cannot import name 'OpenAI'" in str(e):
+                    error_message = f"""
+                    # OpenAI Analysis Unavailable
+                    We're unable to provide an AI-powered analysis for {symbol.upper()} at this time.
+                    **Reason:** OpenAI library version issue
+                    **Solution:** Please update your OpenAI library by running: `pip install --upgrade openai`
+                    """
+                else:
+                    error_message = f"""
+                    # OpenAI Analysis Unavailable
+                    We're unable to provide an AI-powered analysis for {symbol.upper()} at this time.
+                    **Reason:** {str(e)}
+                    Please ensure your OPENAI_API_KEY environment variable is correctly set and try again.
+                    """
+                openai_analysis_text = error_message
                 response["openai_refined_prediction"] = openai_analysis_text
         
         # 5. Generate trading signals
