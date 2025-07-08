@@ -40,6 +40,51 @@ except ImportError:
 # Global cache for responses
 cache = {}
 
+# ---------------------------
+# Timezone Helper Functions
+# ---------------------------
+def ensure_naive_datetime(dt):
+    """
+    Ensure a datetime object is timezone-naive.
+    Args:
+        dt: datetime object (timezone-aware or naive)
+    Returns:
+        timezone-naive datetime object
+    """
+    if dt is None:
+        return None
+    if hasattr(dt, 'tz') and dt.tz is not None:
+        return dt.replace(tzinfo=None)
+    return dt
+
+def ensure_timezone_aware(dt, timezone_info='UTC'):
+    """
+    Ensure a datetime object is timezone-aware.
+    Args:
+        dt: datetime object (timezone-aware or naive)
+        timezone_info: timezone to use if naive (default: 'UTC')
+    Returns:
+        timezone-aware datetime object
+    """
+    if dt is None:
+        return None
+    if hasattr(dt, 'tz') and dt.tz is None:
+        return dt.tz_localize(timezone_info)
+    return dt
+
+def safe_datetime_subtraction(dt1, dt2):
+    """
+    Safely subtract two datetime objects, handling timezone mismatches.
+    Args:
+        dt1, dt2: datetime objects to subtract
+    Returns:
+        timedelta object
+    """
+    # Ensure both are naive for consistent comparison
+    dt1_naive = ensure_naive_datetime(dt1)
+    dt2_naive = ensure_naive_datetime(dt2)
+    return dt1_naive - dt2_naive
+
 # Initialize Flask App with static folder
 app = Flask(__name__, static_folder="static")
 CORS(app, resources={r"/*": {"origins": "*"}})
@@ -347,7 +392,17 @@ def fetch_data(symbol, timeframe, include_extended_hours=True):
     cache_key = f"{symbol.upper()}:{timeframe}:{include_extended_hours}:{is_crypto}"
     if cache_key in cache:
         timestamp, data = cache[cache_key]
-        age = (datetime.now() - timestamp).total_seconds()
+        
+        # Ensure both timestamps are timezone-naive for comparison
+        current_time = datetime.now()
+        if hasattr(timestamp, 'tz') and timestamp.tz is not None:
+            # Convert timezone-aware timestamp to naive
+            timestamp = timestamp.replace(tzinfo=None)
+        if hasattr(current_time, 'tz') and current_time.tz is not None:
+            # Convert timezone-aware current time to naive
+            current_time = current_time.replace(tzinfo=None)
+            
+        age = (current_time - timestamp).total_seconds()
         
         # Shorter cache times for intraday data to ensure freshness
         intraday_options = ["5min", "30min", "2h", "4h"]
@@ -574,6 +629,19 @@ def fetch_data(symbol, timeframe, include_extended_hours=True):
             # Check if the latest data point is recent (within last 2 hours for intraday)
             latest_time = df.index[-1]
             current_time = datetime.now()
+            
+            # Ensure both times are timezone-aware for comparison
+            if hasattr(latest_time, 'tz') and latest_time.tz is not None:
+                # Latest time is timezone-aware, make current time aware too
+                current_time = current_time.replace(tzinfo=timezone.utc)
+            elif hasattr(latest_time, 'tz') and latest_time.tz is None:
+                # Latest time is naive, make it timezone-aware
+                latest_time = latest_time.tz_localize('UTC')
+                current_time = current_time.replace(tzinfo=timezone.utc)
+            else:
+                # Both are naive, that's fine
+                pass
+                
             time_diff = (current_time - latest_time).total_seconds() / 3600  # hours
             
             if time_diff > 2:
@@ -758,8 +826,11 @@ def fetch_data(symbol, timeframe, include_extended_hours=True):
         # Add symbol as name
         df.name = symbol.upper()
         
-        # Store in cache with appropriate TTL
-        cache[cache_key] = (datetime.now(), df)
+        # Store in cache with appropriate TTL (ensure naive timestamp)
+        cache_timestamp = datetime.now()
+        if hasattr(cache_timestamp, 'tz') and cache_timestamp.tz is not None:
+            cache_timestamp = cache_timestamp.replace(tzinfo=None)
+        cache[cache_key] = (cache_timestamp, df)
         
         print(f"Successfully fetched {'crypto' if is_crypto else 'stock'} data for {symbol}, shape: {df.shape}")
         print(f"Data range: {df.index[0]} to {df.index[-1]}")
@@ -812,11 +883,17 @@ def validate_data_freshness(df, symbol, timeframe, is_crypto=False):
     latest_time = df.index[-1]
     current_time = datetime.now()
     
-    # Convert to same timezone for comparison
-    if hasattr(latest_time, 'tz') and latest_time.tz is None:
-        latest_time = latest_time.tz_localize('UTC')
-    if hasattr(current_time, 'tz') and current_time.tz is None:
+    # Ensure both times are timezone-aware for comparison
+    if hasattr(latest_time, 'tz') and latest_time.tz is not None:
+        # Latest time is timezone-aware, make current time aware too
         current_time = current_time.replace(tzinfo=timezone.utc)
+    elif hasattr(latest_time, 'tz') and latest_time.tz is None:
+        # Latest time is naive, make it timezone-aware
+        latest_time = latest_time.tz_localize('UTC')
+        current_time = current_time.replace(tzinfo=timezone.utc)
+    else:
+        # Both are naive, that's fine
+        pass
     
     time_diff = (current_time - latest_time).total_seconds() / 3600  # hours
     
@@ -875,11 +952,17 @@ def enhance_data_with_realtime_price(df, symbol, is_crypto=False):
             latest_time = df.index[-1]
             current_time = datetime.now()
             
-            # Convert to same timezone for comparison
-            if hasattr(latest_time, 'tz') and latest_time.tz is None:
-                latest_time = latest_time.tz_localize('UTC')
-            if hasattr(current_time, 'tz') and current_time.tz is None:
+            # Ensure both times are timezone-aware for comparison
+            if hasattr(latest_time, 'tz') and latest_time.tz is not None:
+                # Latest time is timezone-aware, make current time aware too
                 current_time = current_time.replace(tzinfo=timezone.utc)
+            elif hasattr(latest_time, 'tz') and latest_time.tz is None:
+                # Latest time is naive, make it timezone-aware
+                latest_time = latest_time.tz_localize('UTC')
+                current_time = current_time.replace(tzinfo=timezone.utc)
+            else:
+                # Both are naive, that's fine
+                pass
             
             time_diff = (current_time - latest_time).total_seconds() / 60  # minutes
             
@@ -4760,7 +4843,14 @@ def track_symbol_performance(symbol):
                 }
                 
                 days_needed = min_days_to_evaluate.get(timeframe, 7)
-                time_passed = (datetime.now() - created_date).total_seconds() / (24 * 3600)  # in days
+                # Ensure both times are timezone-naive for comparison
+                current_time = datetime.now()
+                if hasattr(created_date, 'tz') and created_date.tz is not None:
+                    created_date = created_date.replace(tzinfo=None)
+                if hasattr(current_time, 'tz') and current_time.tz is not None:
+                    current_time = current_time.replace(tzinfo=None)
+                    
+                time_passed = (current_time - created_date).total_seconds() / (24 * 3600)  # in days
                 
                 # Production mode: Only evaluate forecasts that have had enough time to mature
                 debug_mode = False  # Production mode - no forced evaluation
@@ -5144,8 +5234,10 @@ def process():
             except Exception as e:
                 print(f"Error testing worksheet access: {e}")
         
-        # Use a timer to track execution time
+        # Use a timer to track execution time (ensure naive datetime)
         start_time = datetime.now()
+        if hasattr(start_time, 'tz') and start_time.tz is not None:
+            start_time = start_time.replace(tzinfo=None)
         
         # Fetch data with extended hours always enabled (stocks) or 24/7 (crypto)
         print(f"Fetching data for {symbol} ({timeframe})...")
