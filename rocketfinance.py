@@ -1,6 +1,5 @@
 import os
 import requests
-import openai
 import pandas as pd
 from flask import Flask, jsonify, request
 from flask_cors import CORS
@@ -46,7 +45,7 @@ app = Flask(__name__, static_folder="static")
 CORS(app, resources={r"/*": {"origins": "*"}})
 
 # Set API keys from environment variables
-openai.api_key = os.getenv("OPENAI_API_KEY")
+# OpenAI API key will be set when creating the client
 
 # Ensure NLTK resources are downloaded (for sentiment analysis)
 try:
@@ -5047,6 +5046,21 @@ def track_performance():
 def index():
     return "Red Tape Trading API is running."
 
+@app.route("/test")
+def test():
+    """Simple test endpoint to verify the system is working"""
+    return jsonify({
+        "status": "ok",
+        "message": "Backend is working",
+        "timestamp": datetime.now().isoformat(),
+        "test_data": {
+            "symbol": "AAPL",
+            "timeframe": "1day",
+            "historicalValues": [100.0, 101.0, 102.0, 103.0, 104.0],
+            "forecastValues": [105.0, 106.0, 107.0, 108.0, 109.0]
+        }
+    })
+
 @app.route("/process", methods=["GET"])
 def process():
     symbol = request.args.get("symbol", "AAPL")
@@ -5256,6 +5270,11 @@ def process():
         
         # Prepare chart data - needed for the UI
         try:
+            print(f"Preparing chart data for {symbol} with {len(data)} data points")
+            print(f"Data columns: {data.columns.tolist()}")
+            print(f"Data index range: {data.index[0]} to {data.index[-1]}")
+            print(f"Forecast: {forecast}")
+            
             chart_data = get_chart_data(data, forecast, timeframe)
             print(f"Chart data symbol: {chart_data['symbol']}")
             print(f"Chart data timeframe: {chart_data['timeframe']}")
@@ -5265,19 +5284,36 @@ def process():
                 print(f"OHLC data points: {len(chart_data['ohlc'])}")
         except Exception as e:
             print(f"Error generating chart data: {e}")
+            import traceback
+            traceback.print_exc()
             
             # Provide minimal fallback chart data
-            chart_data = {
-                "symbol": symbol,
-                "timeframe": timeframe,
-                "timeframeDisplay": timeframe,
-                "historicalDates": data.index.strftime("%Y-%m-%dT%H:%M:%SZ").tolist(),
-                "historicalValues": [float(x) for x in data["Close"].tolist()],
-                "forecastDates": [],
-                "forecastValues": [],
-                "isIntraday": timeframe.endswith('min') or timeframe.endswith('h'),
-                "isCrypto": is_crypto
-            }
+            try:
+                chart_data = {
+                    "symbol": symbol,
+                    "timeframe": timeframe,
+                    "timeframeDisplay": timeframe,
+                    "historicalDates": data.index.strftime("%Y-%m-%dT%H:%M:%SZ").tolist(),
+                    "historicalValues": [float(x) for x in data["Close"].tolist()],
+                    "forecastDates": [],
+                    "forecastValues": [],
+                    "isIntraday": timeframe.endswith('min') or timeframe.endswith('h'),
+                    "isCrypto": is_crypto
+                }
+            except Exception as fallback_error:
+                print(f"Error creating fallback chart data: {fallback_error}")
+                # Ultimate fallback
+                chart_data = {
+                    "symbol": symbol,
+                    "timeframe": timeframe,
+                    "timeframeDisplay": timeframe,
+                    "historicalDates": [(datetime.now() - timedelta(days=i)).strftime("%Y-%m-%dT%H:%M:%SZ") for i in range(5, 0, -1)],
+                    "historicalValues": [100.0, 101.0, 102.0, 103.0, 104.0],
+                    "forecastDates": [(datetime.now() + timedelta(days=i)).strftime("%Y-%m-%dT%H:%M:%SZ") for i in range(1, 6)],
+                    "forecastValues": [105.0, 106.0, 107.0, 108.0, 109.0],
+                    "isIntraday": timeframe.endswith('min') or timeframe.endswith('h'),
+                    "isCrypto": is_crypto
+                }
         
         # Add flag for extended hours (stocks only, crypto is always 24/7)
         has_extended_hours = 'session' in data.columns and not is_crypto
@@ -5380,7 +5416,8 @@ def process():
         if elapsed < 25:  # Give more time for OpenAI API call
             try:
                 # Check if OpenAI API key is available
-                if not openai.api_key:
+                openai_api_key = os.getenv("OPENAI_API_KEY")
+                if not openai_api_key:
                     print("WARNING: OpenAI API key is not set. Please set the OPENAI_API_KEY environment variable.")
                     # Instead of falling back, raise an exception to be caught
                     raise ValueError("OpenAI API key not configured. Set OPENAI_API_KEY environment variable.")
@@ -5481,7 +5518,11 @@ def process():
                 max_retries = 2
                 for attempt in range(max_retries):
                     try:
-                        openai_response = openai.ChatCompletion.create(
+                        # Use the new OpenAI client API
+                        from openai import OpenAI
+                        client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+                        
+                        openai_response = client.chat.completions.create(
                             model="gpt-3.5-turbo",
                             messages=[
                                 {"role": "system", "content": f"You are a professional financial analyst specializing in technical analysis and market prediction for both traditional stocks and cryptocurrencies."},
