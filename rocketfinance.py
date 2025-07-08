@@ -5046,6 +5046,20 @@ def track_performance():
 def index():
     return "Red Tape Trading API is running."
 
+@app.route("/health")
+def health():
+    """Health check endpoint with cache-busting headers"""
+    response = jsonify({
+        "status": "healthy",
+        "timestamp": datetime.now().isoformat(),
+        "version": "1.0.0"
+    })
+    # Add cache-busting headers
+    response.headers['Cache-Control'] = 'no-cache, no-store, must-revalidate'
+    response.headers['Pragma'] = 'no-cache'
+    response.headers['Expires'] = '0'
+    return response
+
 @app.route("/test")
 def test():
     """Simple test endpoint to verify the system is working"""
@@ -5627,7 +5641,14 @@ def process():
         
         # Return the response with whatever we managed to calculate
         print(f"Total processing time: {(datetime.now() - start_time).total_seconds():.2f}s")
-        return jsonify(response)
+        
+        # Add cache-busting headers to prevent browser caching issues
+        response_obj = jsonify(response)
+        response_obj.headers['Cache-Control'] = 'no-cache, no-store, must-revalidate'
+        response_obj.headers['Pragma'] = 'no-cache'
+        response_obj.headers['Expires'] = '0'
+        
+        return response_obj
     except Exception as e:
         print(f"Error processing request: {e}")
         import traceback
