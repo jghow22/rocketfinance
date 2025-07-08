@@ -4958,12 +4958,10 @@ def get_signals_api():
         limit = int(request.args.get("limit", 10))
         signals = get_recent_signals(symbol, limit)
         response = jsonify({"signals": signals})
-        response.headers['Content-Security-Policy'] = "default-src 'self'; script-src 'self' 'unsafe-eval' 'unsafe-inline' https://cdn.plot.ly https://cdnjs.cloudflare.com https://fonts.googleapis.com; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://cdnjs.cloudflare.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data:; connect-src 'self' https://rocketfinance.onrender.com;"
         return response
     except Exception as e:
         print(f"Error in signals API: {e}")
         response = jsonify({"signals": [], "error": str(e)})
-        response.headers['Content-Security-Policy'] = "default-src 'self'; script-src 'self' 'unsafe-eval' 'unsafe-inline' https://cdn.plot.ly https://cdnjs.cloudflare.com https://fonts.googleapis.com; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://cdnjs.cloudflare.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data:; connect-src 'self' https://rocketfinance.onrender.com;"
         return response, 500
 
 @app.route("/api/forecasts", methods=["GET"])
@@ -4974,12 +4972,10 @@ def get_forecasts_api():
         limit = int(request.args.get("limit", 10))
         forecasts = get_forecast_history(symbol, limit)
         response = jsonify({"forecasts": forecasts})
-        response.headers['Content-Security-Policy'] = "default-src 'self'; script-src 'self' 'unsafe-eval' 'unsafe-inline' https://cdn.plot.ly https://cdnjs.cloudflare.com https://fonts.googleapis.com; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://cdnjs.cloudflare.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data:; connect-src 'self' https://rocketfinance.onrender.com;"
         return response
     except Exception as e:
         print(f"Error in forecasts API: {e}")
         response = jsonify({"forecasts": [], "error": str(e)})
-        response.headers['Content-Security-Policy'] = "default-src 'self'; script-src 'self' 'unsafe-eval' 'unsafe-inline' https://cdn.plot.ly https://cdnjs.cloudflare.com https://fonts.googleapis.com; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://cdnjs.cloudflare.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data:; connect-src 'self' https://rocketfinance.onrender.com;"
         return response, 500
 
 # ---------------------------
@@ -5013,7 +5009,6 @@ def track_performance():
                 "tracked_count": tracked_count,
                 "debug_mode": debug_mode
             })
-            response.headers['Content-Security-Policy'] = "default-src 'self'; script-src 'self' 'unsafe-eval' 'unsafe-inline' https://cdn.plot.ly https://cdnjs.cloudflare.com https://fonts.googleapis.com; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://cdnjs.cloudflare.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data:; connect-src 'self' https://rocketfinance.onrender.com;"
             return response
         
         # Otherwise, get recent forecasts for all symbols
@@ -5041,14 +5036,12 @@ def track_performance():
             "results_by_symbol": results_by_symbol,
             "debug_mode": debug_mode
         })
-        response.headers['Content-Security-Policy'] = "default-src 'self'; script-src 'self' 'unsafe-eval' 'unsafe-inline' https://cdn.plot.ly https://cdnjs.cloudflare.com https://fonts.googleapis.com; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://cdnjs.cloudflare.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data:; connect-src 'self' https://rocketfinance.onrender.com;"
         return response
     except Exception as e:
         print(f"Error in track_performance endpoint: {e}")
         import traceback
         traceback.print_exc()
         response = jsonify({"error": str(e)})
-        response.headers['Content-Security-Policy'] = "default-src 'self'; script-src 'self' 'unsafe-eval' 'unsafe-inline' https://cdn.plot.ly https://cdnjs.cloudflare.com https://fonts.googleapis.com; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://cdnjs.cloudflare.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data:; connect-src 'self' https://rocketfinance.onrender.com;"
         return response, 500
 
 # Production endpoint for performance tracking (test endpoint removed)
@@ -5059,7 +5052,7 @@ def track_performance():
 @app.route("/")
 def index():
     response = "Red Tape Trading API is running."
-    return response, 200, {'Content-Security-Policy': "default-src 'self'; script-src 'self' 'unsafe-eval' 'unsafe-inline' https://cdn.plot.ly https://cdnjs.cloudflare.com https://fonts.googleapis.com; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://cdnjs.cloudflare.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data:; connect-src 'self' https://rocketfinance.onrender.com;"}
+    return response
 
 @app.route("/health")
 def health():
@@ -5073,8 +5066,6 @@ def health():
     response.headers['Cache-Control'] = 'no-cache, no-store, must-revalidate'
     response.headers['Pragma'] = 'no-cache'
     response.headers['Expires'] = '0'
-    # Add Content Security Policy headers
-    response.headers['Content-Security-Policy'] = "default-src 'self'; script-src 'self' 'unsafe-eval' 'unsafe-inline' https://cdn.plot.ly https://cdnjs.cloudflare.com https://fonts.googleapis.com; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://cdnjs.cloudflare.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data:; connect-src 'self' https://rocketfinance.onrender.com;"
     return response
 
 @app.route("/test")
@@ -5091,8 +5082,6 @@ def test():
             "forecastValues": [105.0, 106.0, 107.0, 108.0, 109.0]
         }
     })
-    # Add Content Security Policy headers
-    response.headers['Content-Security-Policy'] = "default-src 'self'; script-src 'self' 'unsafe-eval' 'unsafe-inline' https://cdn.plot.ly https://cdnjs.cloudflare.com https://fonts.googleapis.com; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://cdnjs.cloudflare.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data:; connect-src 'self' https://rocketfinance.onrender.com;"
     return response
 
 @app.route("/process", methods=["GET"])
@@ -5113,7 +5102,6 @@ def process():
             "message": f"Symbol '{symbol}' is not valid. Please enter a valid stock symbol (1-5 characters, letters and numbers only).",
             "suggestions": ["AAPL", "MSFT", "GOOGL", "TSLA", "AMZN"]
         })
-        response.headers['Content-Security-Policy'] = "default-src 'self'; script-src 'self' 'unsafe-eval' 'unsafe-inline' https://cdn.plot.ly https://cdnjs.cloudflare.com https://fonts.googleapis.com; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://cdnjs.cloudflare.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data:; connect-src 'self' https://rocketfinance.onrender.com;"
         return response, 400
     
     symbol = normalized_symbol
@@ -5412,7 +5400,6 @@ def process():
         if elapsed > 15:  # If we're already taking too long, return what we have
             print(f"Request taking too long ({elapsed:.2f}s), returning partial data")
             response_obj = jsonify(response)
-            response_obj.headers['Content-Security-Policy'] = "default-src 'self'; script-src 'self' 'unsafe-eval' 'unsafe-inline' https://cdn.plot.ly https://cdnjs.cloudflare.com https://fonts.googleapis.com; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://cdnjs.cloudflare.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data:; connect-src 'self' https://rocketfinance.onrender.com;"
             return response_obj
         
         # Now process additional data in order of importance
@@ -5674,9 +5661,6 @@ def process():
         response_obj.headers['Pragma'] = 'no-cache'
         response_obj.headers['Expires'] = '0'
         
-        # Add Content Security Policy headers to allow Plotly.js and other required scripts
-        response_obj.headers['Content-Security-Policy'] = "default-src 'self'; script-src 'self' 'unsafe-eval' 'unsafe-inline' https://cdn.plot.ly https://cdnjs.cloudflare.com https://fonts.googleapis.com; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://cdnjs.cloudflare.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data:; connect-src 'self' https://rocketfinance.onrender.com;"
-        
         return response_obj
     except Exception as e:
         print(f"Error processing request: {e}")
@@ -5702,9 +5686,6 @@ def process():
             "news": [{"title": "Error fetching data", "source": {"name": "Trading System"}, "summary": "We encountered an error while analyzing this symbol. Please try again later."}],
             "isCrypto": is_crypto_symbol(symbol)
         })
-        
-        # Add Content Security Policy headers to allow Plotly.js and other required scripts
-        response_obj.headers['Content-Security-Policy'] = "default-src 'self'; script-src 'self' 'unsafe-eval' 'unsafe-inline' https://cdn.plot.ly https://cdnjs.cloudflare.com https://fonts.googleapis.com; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://cdnjs.cloudflare.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data:; connect-src 'self' https://rocketfinance.onrender.com;"
         
         return response_obj, 200  # Return 200 even on error to prevent frontend crashes
 
