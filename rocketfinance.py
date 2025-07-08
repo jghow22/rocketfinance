@@ -4541,8 +4541,8 @@ def track_symbol_performance(symbol):
                 days_needed = min_days_to_evaluate.get(timeframe, 7)
                 time_passed = (datetime.now() - created_date).total_seconds() / (24 * 3600)  # in days
                 
-                # IMPORTANT: For debugging purposes, we'll force evaluation regardless of time
-                debug_mode = True  # Force evaluation for debugging
+                # Production mode: Only evaluate forecasts that have had enough time to mature
+                debug_mode = False  # Production mode - no forced evaluation
                 
                 if time_passed < days_needed and not debug_mode:
                     print(f"Skipping forecast {forecast_id} - not enough time passed ({time_passed:.1f} days < {days_needed} days)")
@@ -4768,8 +4768,8 @@ def track_performance():
         if sheets_db is None:
             return jsonify({"error": "Google Sheets database is not available"}), 500
         
-        # Debug mode - force tracking regardless of time elapsed
-        debug_mode = request.args.get("debug", "true").lower() == "true"  # Set default to true for testing
+        # Production mode - only track forecasts that have matured
+        debug_mode = request.args.get("debug", "false").lower() == "true"  # Set default to false for production
         print(f"Performance tracking running in {'DEBUG' if debug_mode else 'NORMAL'} mode")
         
         # Check which symbol to track (can be specified in query params)
@@ -4816,70 +4816,7 @@ def track_performance():
         traceback.print_exc()
         return jsonify({"error": str(e)}), 500
 
-# Add a test route to debug performance tracking
-@app.route("/test_tracking", methods=["GET"])
-def test_tracking():
-    """
-    Test route for debugging performance tracking.
-    """
-    try:
-        symbol = request.args.get("symbol", "AAPL")
-        print(f"Testing performance tracking for {symbol}")
-        
-        # Try to directly add a test record
-        try:
-            if sheets_db is None:
-                return jsonify({"error": "Google Sheets database not available"}), 500
-                
-            worksheet = sheets_db.worksheet("performance_tracking")
-            
-            # Create test data
-            tracking_id = str(uuid.uuid4())
-            forecast_id = "test_" + str(uuid.uuid4())[:8]
-            actual_prices = [100.0, 101.0, 102.0, 103.0, 104.0]
-            forecast_error = 5.0
-            market_conditions = "Test tracking"
-            created_at = datetime.now().isoformat()
-            
-            # Format for storage
-            actual_prices_json = json.dumps(actual_prices)
-            
-            # Create row
-            new_row = [
-                tracking_id,
-                symbol,
-                forecast_id,
-                actual_prices_json,
-                str(forecast_error),
-                market_conditions,
-                created_at
-            ]
-            
-            # Try to append
-            worksheet.append_row(new_row)
-            
-            return jsonify({
-                "success": True, 
-                "message": f"Test record added to performance_tracking for {symbol}",
-                "tracking_id": tracking_id
-            })
-            
-        except Exception as e:
-            print(f"Error in direct test: {e}")
-            import traceback
-            traceback.print_exc()
-            
-            return jsonify({
-                "success": False,
-                "error": str(e),
-                "test_type": "direct"
-            })
-            
-    except Exception as e:
-        print(f"Error in test_tracking route: {e}")
-        import traceback
-        traceback.print_exc()
-        return jsonify({"error": str(e)}), 500
+# Production endpoint for performance tracking (test endpoint removed)
 
 # ---------------------------
 # Flask Routes
@@ -5444,5 +5381,9 @@ def process():
         }), 200  # Return 200 even on error to prevent frontend crashes
 
 if __name__ == "__main__":
+    # Production configuration
+    app.config['DEBUG'] = False
+    app.config['TESTING'] = False
+    
     port = int(os.environ.get("PORT", 8080))
-    app.run(host="0.0.0.0", port=port)
+    app.run(host="0.0.0.0", port=port, debug=False)
