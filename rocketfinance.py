@@ -5397,24 +5397,7 @@ def process():
             "tradingHours": "24/7" if is_crypto else "Market Hours"
         }
         
-        # Debug: Print chart data structure
-        print("DEBUG: Chart data structure:")
-        print(f"  - chart_data keys: {list(chart_data.keys())}")
-        print(f"  - chart_data['historicalDates'] exists: {'historicalDates' in chart_data}")
-        print(f"  - chart_data['historicalValues'] exists: {'historicalValues' in chart_data}")
-        if 'historicalDates' in chart_data:
-            print(f"  - historicalDates length: {len(chart_data['historicalDates'])}")
-        if 'historicalValues' in chart_data:
-            print(f"  - historicalValues length: {len(chart_data['historicalValues'])}")
-        
-        # Ensure required properties are present in chart data
-        if 'historicalDates' not in chart_data or 'historicalValues' not in chart_data:
-            print("WARNING: Missing required chart data properties, adding fallback data")
-            # Add fallback data to ensure HTML component works
-            fallback_dates = [(datetime.now() - timedelta(days=i)).strftime("%Y-%m-%dT%H:%M:%SZ") for i in range(5, 0, -1)]
-            fallback_values = [data['Close'].iloc[-1] + (i * 0.01) for i in range(5)]
-            chart_data['historicalDates'] = fallback_dates
-            chart_data['historicalValues'] = fallback_values
+
         
         # Generate chart in the background
         try:
