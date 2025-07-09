@@ -307,11 +307,11 @@ def filter_data_by_timeframe(data, timeframe, is_crypto=False):
             "30min": 96,      # 48 hours worth of 30-minute bars
             "2h": 84,         # 7 days worth of 2-hour bars
             "4h": 84,         # 14 days worth of 4-hour bars
-            "1day": 252,      # 1 year of trading days
-            "7day": 52,       # 1 year of weeks
-            "1mo": 24,        # 2 years of months
-            "3mo": 20,        # 5 years of quarters
-            "1yr": 10         # 10 years of years
+            "1day": 1,        # 1 day of data (standard brokerage behavior)
+            "7day": 7,        # 1 week of daily data
+            "1mo": 30,        # 1 month of daily data
+            "3mo": 90,        # 3 months of daily data
+            "1yr": 365        # 1 year of daily data
         }
         
         target_count = target_bars.get(timeframe, 252)
