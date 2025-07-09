@@ -303,15 +303,15 @@ def filter_data_by_timeframe(data, timeframe, is_crypto=False):
     try:
         # Define the target number of bars for each timeframe (standard brokerage style)
         target_bars = {
-            "5min": 288,      # 24 hours worth of 5-minute bars
-            "30min": 96,      # 48 hours worth of 30-minute bars
-            "2h": 84,         # 7 days worth of 2-hour bars
-            "4h": 84,         # 14 days worth of 4-hour bars
-            "1day": 1,        # 1 day of data (standard brokerage behavior)
-            "7day": 7,        # 1 week of daily data
-            "1mo": 30,        # 1 month of daily data
-            "3mo": 90,        # 3 months of daily data
-            "1yr": 365        # 1 year of daily data
+            "5min": 288,      # 24 hours worth of 5-minute bars (6.5 trading hours * 12 bars/hour)
+            "30min": 96,      # 48 hours worth of 30-minute bars (6.5 trading hours * 2 bars/hour * 2 days)
+            "2h": 84,         # 7 days worth of 2-hour bars (6.5 trading hours / 2 * 7 days)
+            "4h": 84,         # 14 days worth of 4-hour bars (6.5 trading hours / 4 * 14 days)
+            "1day": 30,       # 30 days of daily data (about 1 month)
+            "7day": 90,       # 90 days of daily data (about 3 months)
+            "1mo": 90,        # 90 days of daily data (about 3 months)
+            "3mo": 180,       # 180 days of daily data (about 6 months)
+            "1yr": 365        # 365 days of daily data (about 1 year)
         }
         
         target_count = target_bars.get(timeframe, 252)
@@ -781,13 +781,15 @@ def fetch_data(symbol, timeframe, include_extended_hours=True, force_refresh=Fal
         
         # Limit data based on timeframe with more data for intraday
         if timeframe == "5min":
-            df = df.iloc[-min(500, len(df)):]  # More data for 5min
+            df = df.iloc[-min(1000, len(df)):]  # More data for 5min - about 2 weeks
         elif timeframe == "30min":
-            df = df.iloc[-min(400, len(df)):]  # More data for 30min
+            df = df.iloc[-min(800, len(df)):]  # More data for 30min - about 2 weeks
         elif timeframe == "2h":
-            df = df.iloc[-min(300, len(df)):]  # More data for 2h
+            df = df.iloc[-min(600, len(df)):]  # More data for 2h - about 2 months
         elif timeframe == "4h":
-            df = df.iloc[-min(250, len(df)):]  # More data for 4h
+            df = df.iloc[-min(500, len(df)):]  # More data for 4h - about 3 months
+        elif timeframe == "1day":
+            df = df.iloc[-min(365, len(df)):]  # 1 year of daily data
         elif timeframe == "7day":
             df = df.iloc[-min(104, len(df)):]  # ~2 years
         elif timeframe == "1mo":
