@@ -424,7 +424,11 @@ def fetch_data(symbol, timeframe, include_extended_hours=True, force_refresh=Fal
         if is_crypto:
             # Cryptocurrency data fetching
             if timeframe in intraday_options:
-                base_interval = "60min" if timeframe in ["2h", "4h"] else timeframe
+                # For 2h and 4h, we need to fetch 1-minute data and resample
+                if timeframe in ["2h", "4h"]:
+                    base_interval = "1min"
+                else:
+                    base_interval = timeframe
                 function = "DIGITAL_CURRENCY_INTRADAY"
                 params = {
                     "function": function,
@@ -460,7 +464,12 @@ def fetch_data(symbol, timeframe, include_extended_hours=True, force_refresh=Fal
         else:
             # Stock data fetching with improved parameters for fresh data
             if timeframe in intraday_options:
-                base_interval = "60min" if timeframe in ["2h", "4h"] else timeframe
+                # For 2h and 4h, we need to fetch 1-minute data and resample
+                if timeframe in ["2h", "4h"]:
+                    base_interval = "1min"
+                else:
+                    base_interval = timeframe
+                
                 function = "TIME_SERIES_INTRADAY"
                 # Always use "full" for intraday to get maximum data points
                 outputsize = "full"
@@ -785,9 +794,9 @@ def fetch_data(symbol, timeframe, include_extended_hours=True, force_refresh=Fal
         elif timeframe == "30min":
             df = df.iloc[-min(800, len(df)):]  # More data for 30min - about 2 weeks
         elif timeframe == "2h":
-            df = df.iloc[-min(600, len(df)):]  # More data for 2h - about 2 months
+            df = df.iloc[-min(10000, len(df)):]  # Much more 1-minute data for 2h resampling
         elif timeframe == "4h":
-            df = df.iloc[-min(500, len(df)):]  # More data for 4h - about 3 months
+            df = df.iloc[-min(15000, len(df)):]  # Much more 1-minute data for 4h resampling
         elif timeframe == "1day":
             df = df.iloc[-min(365, len(df)):]  # 1 year of daily data
         elif timeframe == "7day":
@@ -813,7 +822,15 @@ def fetch_data(symbol, timeframe, include_extended_hours=True, force_refresh=Fal
             }
             if "Volume" in df.columns:
                 agg_dict["Volume"] = 'sum'
+            
+            # Resample and drop any periods with no data
             df = df.resample(freq).agg(agg_dict).dropna()
+            
+            # Take the last N bars based on our target
+            target_bars = 84 if timeframe == "2h" else 84  # 7 days worth of 2h bars, 14 days worth of 4h bars
+            if len(df) > target_bars:
+                df = df.tail(target_bars)
+            
             print(f"Resampled {'crypto' if is_crypto else 'stock'} data to {freq} frequency, resulting in {len(df)} rows.")
         
         # For crypto, we don't have extended hours concept (24/7 trading)
