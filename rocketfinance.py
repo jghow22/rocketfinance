@@ -362,7 +362,7 @@ def filter_data_by_timeframe(data, timeframe, is_crypto=False):
 # ---------------------------
 # Data Fetching from Alpha Vantage (Updated with Crypto Support)
 # ---------------------------
-def fetch_data(symbol, timeframe, include_extended_hours=True):
+def fetch_data(symbol, timeframe, include_extended_hours=True, force_refresh=False):
     """
     Fetch stock or crypto data for a symbol from Alpha Vantage with better error handling.
     Now supports both stocks and cryptocurrencies with improved crypto handling.
@@ -390,7 +390,7 @@ def fetch_data(symbol, timeframe, include_extended_hours=True):
     
     # Check cache first with shorter cache times for intraday data
     cache_key = f"{symbol.upper()}:{timeframe}:{include_extended_hours}:{is_crypto}"
-    if cache_key in cache:
+    if cache_key in cache and not force_refresh:
         timestamp, data = cache[cache_key]
         
         # Ensure both timestamps are timezone-naive for comparison
@@ -404,12 +404,12 @@ def fetch_data(symbol, timeframe, include_extended_hours=True):
             
         age = (current_time - timestamp).total_seconds()
         
-        # Shorter cache times for intraday data to ensure freshness
+        # Very short cache times to ensure maximum freshness
         intraday_options = ["5min", "30min", "2h", "4h"]
         if timeframe in intraday_options:
-            max_cache_age = 60  # 1 minute for intraday data
+            max_cache_age = 30  # 30 seconds for intraday data (very fresh)
         else:
-            max_cache_age = 300  # 5 minutes for daily/weekly/monthly data
+            max_cache_age = 120  # 2 minutes for daily/weekly/monthly data
         
         if age < max_cache_age:
             print(f"Using cached data for {symbol} {timeframe} ({'crypto' if is_crypto else 'stock'}) (age: {age:.1f}s)")
@@ -903,15 +903,15 @@ def validate_data_freshness(df, symbol, timeframe, is_crypto=False):
     if is_crypto:
         # Crypto trades 24/7, so data should be very recent
         if timeframe in intraday_options:
-            max_age = 0.5  # 30 minutes for crypto intraday
+            max_age = 1.0  # 1 hour for crypto intraday (more lenient)
         else:
-            max_age = 2.0  # 2 hours for crypto daily/weekly/monthly
+            max_age = 4.0  # 4 hours for crypto daily/weekly/monthly
     else:
-        # Stock data freshness requirements
+        # Stock data freshness requirements (more lenient for after-hours)
         if timeframe in intraday_options:
-            max_age = 2.0  # 2 hours for stock intraday
+            max_age = 4.0  # 4 hours for stock intraday (allows after-hours)
         else:
-            max_age = 24.0  # 24 hours for stock daily/weekly/monthly
+            max_age = 48.0  # 48 hours for stock daily/weekly/monthly
     
     is_fresh = time_diff <= max_age
     
@@ -966,8 +966,8 @@ def enhance_data_with_realtime_price(df, symbol, is_crypto=False):
             
             time_diff = (current_time - latest_time).total_seconds() / 60  # minutes
             
-            # If the latest data is more than 5 minutes old, add a new data point
-            if time_diff > 5:
+            # If the latest data is more than 2 minutes old, add a new data point (more aggressive)
+            if time_diff > 2:
                 print(f"Adding real-time price update for {symbol}: ${current_price:.2f}")
                 
                 # Create a new row with the current price
@@ -1349,11 +1349,25 @@ def mark_extended_hours(data):
     session_counts = df['session'].value_counts()
     print(f"Session breakdown: {dict(session_counts)}")
     
+    # Show data range and latest data point
+    print(f"Data range: {df.index[0]} to {df.index[-1]}")
+    print(f"Latest data point: {df.index[-1]} (${df['Close'].iloc[-1]:.2f})")
+    
     # Verify we have extended hours data
     if 'pre-market' in session_counts or 'after-hours' in session_counts:
-        print(f"Extended hours data detected: {session_counts.get('pre-market', 0)} pre-market, {session_counts.get('after-hours', 0)} after-hours")
+        print(f"✅ Extended hours data detected: {session_counts.get('pre-market', 0)} pre-market, {session_counts.get('after-hours', 0)} after-hours")
+        
+        # Show specific after-hours data if available
+        if 'after-hours' in session_counts and session_counts['after-hours'] > 0:
+            after_hours_data = df[df['session'] == 'after-hours']
+            print(f"After-hours data range: {after_hours_data.index[0]} to {after_hours_data.index[-1]}")
+            print(f"Latest after-hours price: ${after_hours_data['Close'].iloc[-1]:.2f}")
     else:
-        print("No extended hours data detected - this may indicate data source limitations")
+        print("⚠️ No extended hours data detected - this may indicate data source limitations")
+        print("This could be due to:")
+        print("  - Alpha Vantage API not providing extended hours data")
+        print("  - Data being fetched outside of extended hours")
+        print("  - API rate limits preventing fresh data")
     
     return df
 
@@ -5240,9 +5254,11 @@ def process():
             start_time = start_time.replace(tzinfo=None)
         
         # Fetch data with extended hours always enabled (stocks) or 24/7 (crypto)
-        print(f"Fetching data for {symbol} ({timeframe})...")
+        # Force refresh for intraday data to ensure we get the latest after-hours data
+        force_refresh = timeframe in ["5min", "30min", "2h", "4h"]
+        print(f"Fetching data for {symbol} ({timeframe}) with force_refresh={force_refresh}...")
         try:
-            data = fetch_data(symbol, timeframe, include_extended_hours)
+            data = fetch_data(symbol, timeframe, include_extended_hours, force_refresh)
             print(f"Data fetch completed. Data type: {type(data)}")
             if data is not None:
                 print(f"Data shape: {data.shape if hasattr(data, 'shape') else 'No shape'}")
