@@ -301,17 +301,17 @@ def filter_data_by_timeframe(data, timeframe, is_crypto=False):
         return data
     
     try:
-        # Define the target number of bars for each timeframe (standard brokerage style)
+        # Define the target number of bars for each timeframe (enhanced for more comprehensive analysis)
         target_bars = {
-            "5min": 288,      # 24 hours worth of 5-minute bars (6.5 trading hours * 12 bars/hour)
-            "30min": 96,      # 48 hours worth of 30-minute bars (6.5 trading hours * 2 bars/hour * 2 days)
-            "2h": 84,         # 7 days worth of 2-hour bars (6.5 trading hours / 2 * 7 days)
-            "4h": 84,         # 14 days worth of 4-hour bars (6.5 trading hours / 4 * 14 days)
-            "1day": 30,       # 30 days of daily data (about 1 month)
-            "7day": 90,       # 90 days of daily data (about 3 months)
-            "1mo": 90,        # 90 days of daily data (about 3 months)
-            "3mo": 180,       # 180 days of daily data (about 6 months)
-            "1yr": 365        # 365 days of daily data (about 1 year)
+            "5min": 576,      # 48 hours worth of 5-minute bars (6.5 trading hours * 12 bars/hour * 2 days)
+            "30min": 192,     # 96 hours worth of 30-minute bars (6.5 trading hours * 2 bars/hour * 4 days)
+            "2h": 168,        # 14 days worth of 2-hour bars (6.5 trading hours / 2 * 14 days)
+            "4h": 168,        # 28 days worth of 4-hour bars (6.5 trading hours / 4 * 28 days)
+            "1day": 90,       # 90 days of daily data (about 3 months)
+            "7day": 180,      # 180 days of daily data (about 6 months)
+            "1mo": 180,       # 180 days of daily data (about 6 months)
+            "3mo": 365,       # 365 days of daily data (about 1 year)
+            "1yr": 730        # 730 days of daily data (about 2 years)
         }
         
         target_count = target_bars.get(timeframe, 252)
@@ -3483,6 +3483,139 @@ def market_aware_forecast(data, periods=5, timeframe="1day", symbol="AAPL"):
 # ---------------------------
 # Generate OHLC data for forecast points
 # ---------------------------
+def generate_live_trading_signals(data, timeframe):
+    """
+    Generate live buy/sell signals based on technical analysis and price action.
+    Returns signal data that can be plotted on the chart.
+    """
+    try:
+        if data is None or len(data) < 20:
+            return []
+        
+        # Calculate technical indicators
+        data_with_indicators = calculate_technical_indicators(data)
+        
+        signals = []
+        signal_lookback = min(50, len(data_with_indicators) - 1)  # Look back 50 bars or less
+        
+        for i in range(signal_lookback, len(data_with_indicators)):
+            current_price = data_with_indicators['Close'].iloc[i]
+            current_date = data_with_indicators.index[i]
+            
+            # Get recent data for analysis
+            recent_data = data_with_indicators.iloc[max(0, i-20):i+1]
+            
+            # Calculate signal strength and type
+            signal_type = "hold"
+            signal_strength = "weak"
+            confidence = 0.0
+            
+            # RSI-based signals
+            if 'RSI' in recent_data.columns and not pd.isna(recent_data['RSI'].iloc[-1]):
+                rsi = recent_data['RSI'].iloc[-1]
+                if rsi < 30:
+                    signal_type = "buy"
+                    signal_strength = "strong" if rsi < 20 else "moderate"
+                    confidence = 0.8 if rsi < 20 else 0.6
+                elif rsi > 70:
+                    signal_type = "sell"
+                    signal_strength = "strong" if rsi > 80 else "moderate"
+                    confidence = 0.8 if rsi > 80 else 0.6
+            
+            # MACD-based signals
+            if 'MACD' in recent_data.columns and 'MACD_Signal' in recent_data.columns:
+                macd = recent_data['MACD'].iloc[-1]
+                macd_signal = recent_data['MACD_Signal'].iloc[-1]
+                macd_prev = recent_data['MACD'].iloc[-2] if len(recent_data) > 1 else macd
+                macd_signal_prev = recent_data['MACD_Signal'].iloc[-2] if len(recent_data) > 1 else macd_signal
+                
+                # MACD crossover signals
+                if macd > macd_signal and macd_prev <= macd_signal_prev:
+                    if signal_type == "hold":
+                        signal_type = "buy"
+                        signal_strength = "moderate"
+                        confidence = 0.7
+                elif macd < macd_signal and macd_prev >= macd_signal_prev:
+                    if signal_type == "hold":
+                        signal_type = "sell"
+                        signal_strength = "moderate"
+                        confidence = 0.7
+            
+            # Bollinger Bands signals
+            if all(col in recent_data.columns for col in ['BB_Upper', 'BB_Lower', 'Close']):
+                bb_upper = recent_data['BB_Upper'].iloc[-1]
+                bb_lower = recent_data['BB_Lower'].iloc[-1]
+                
+                if current_price <= bb_lower and signal_type == "hold":
+                    signal_type = "buy"
+                    signal_strength = "moderate"
+                    confidence = 0.6
+                elif current_price >= bb_upper and signal_type == "hold":
+                    signal_type = "sell"
+                    signal_strength = "moderate"
+                    confidence = 0.6
+            
+            # Moving Average signals
+            if 'SMA_20' in recent_data.columns and 'SMA_50' in recent_data.columns:
+                sma_20 = recent_data['SMA_20'].iloc[-1]
+                sma_50 = recent_data['SMA_50'].iloc[-1]
+                sma_20_prev = recent_data['SMA_20'].iloc[-2] if len(recent_data) > 1 else sma_20
+                sma_50_prev = recent_data['SMA_50'].iloc[-2] if len(recent_data) > 1 else sma_50
+                
+                # Golden Cross (SMA 20 crosses above SMA 50)
+                if sma_20 > sma_50 and sma_20_prev <= sma_50_prev and signal_type == "hold":
+                    signal_type = "buy"
+                    signal_strength = "strong"
+                    confidence = 0.8
+                # Death Cross (SMA 20 crosses below SMA 50)
+                elif sma_20 < sma_50 and sma_20_prev >= sma_50_prev and signal_type == "hold":
+                    signal_type = "sell"
+                    signal_strength = "strong"
+                    confidence = 0.8
+            
+            # Price action signals (support/resistance breaks)
+            if len(recent_data) >= 10:
+                recent_highs = recent_data['High'].rolling(window=10).max()
+                recent_lows = recent_data['Low'].rolling(window=10).min()
+                
+                # Breakout above recent highs
+                if current_price > recent_highs.iloc[-2] and signal_type == "hold":
+                    signal_type = "buy"
+                    signal_strength = "moderate"
+                    confidence = 0.6
+                # Breakdown below recent lows
+                elif current_price < recent_lows.iloc[-2] and signal_type == "hold":
+                    signal_type = "sell"
+                    signal_strength = "moderate"
+                    confidence = 0.6
+            
+            # Only add signals with sufficient confidence
+            if signal_type != "hold" and confidence >= 0.5:
+                signal_data = {
+                    "date": current_date.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                    "price": float(current_price),
+                    "type": signal_type,
+                    "strength": signal_strength,
+                    "confidence": round(confidence, 2),
+                    "indicators": {
+                        "rsi": float(recent_data['RSI'].iloc[-1]) if 'RSI' in recent_data.columns and not pd.isna(recent_data['RSI'].iloc[-1]) else None,
+                        "macd": float(recent_data['MACD'].iloc[-1]) if 'MACD' in recent_data.columns else None,
+                        "sma_20": float(recent_data['SMA_20'].iloc[-1]) if 'SMA_20' in recent_data.columns else None,
+                        "sma_50": float(recent_data['SMA_50'].iloc[-1]) if 'SMA_50' in recent_data.columns else None
+                    }
+                }
+                signals.append(signal_data)
+        
+        # Limit to recent signals (last 20)
+        recent_signals = signals[-20:] if len(signals) > 20 else signals
+        
+        print(f"Generated {len(recent_signals)} live trading signals for {timeframe}")
+        return recent_signals
+        
+    except Exception as e:
+        print(f"Error generating live trading signals: {e}")
+        return []
+
 def generate_forecast_ohlc(data, forecast):
     """
     Generate OHLC values for forecast points with more realistic patterns.
@@ -3941,6 +4074,9 @@ def get_chart_data(data, forecast, timeframe):
         # Generate forecast OHLC data (use filtered data for better accuracy)
         forecast_ohlc = generate_forecast_ohlc(filtered_data, forecast)
         
+        # Generate live trading signals
+        live_signals = generate_live_trading_signals(filtered_data, timeframe)
+        
         # Determine if this is intraday data
         is_intraday = timeframe.endswith('min') or timeframe.endswith('h')
         
@@ -3956,7 +4092,8 @@ def get_chart_data(data, forecast, timeframe):
             "isIntraday": is_intraday,
             "isCrypto": is_crypto,
             "tradingHours": "24/7" if is_crypto else "Market Hours",
-            "forecastAnalysis": forecast_analysis
+            "forecastAnalysis": forecast_analysis,
+            "liveSignals": live_signals
         }
         
         # Include OHLC data if available
