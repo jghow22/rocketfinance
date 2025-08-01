@@ -1587,7 +1587,7 @@ def get_placeholder_news(symbol):
 # Technical Indicators Calculation
 # ---------------------------
 def calculate_technical_indicators(data):
-    """Calculate key technical indicators for forecasting enhancement."""
+    """Calculate comprehensive technical indicators for enhanced signal generation."""
     try:
         if data is None or len(data) == 0:
             print("Cannot calculate indicators on None or empty data")
@@ -1609,8 +1609,10 @@ def calculate_technical_indicators(data):
         # Moving Averages
         df['SMA_20'] = df['Close'].rolling(window=min(20, len(df))).mean()
         df['SMA_50'] = df['Close'].rolling(window=min(50, len(df))).mean()
+        df['SMA_200'] = df['Close'].rolling(window=min(200, len(df))).mean()
         df['EMA_12'] = df['Close'].ewm(span=min(12, len(df)), adjust=False).mean()
         df['EMA_26'] = df['Close'].ewm(span=min(26, len(df)), adjust=False).mean()
+        df['EMA_50'] = df['Close'].ewm(span=min(50, len(df)), adjust=False).mean()
         
         # MACD
         df['MACD'] = df['EMA_12'] - df['EMA_26']
@@ -1630,12 +1632,42 @@ def calculate_technical_indicators(data):
         rs = rs.replace(np.nan, 0)
         df['RSI'] = 100 - (100 / (1 + rs))
         
+        # Stochastic Oscillator
+        if 'High' in df.columns and 'Low' in df.columns:
+            window = min(14, len(df))
+            df['Stoch_K'] = ((df['Close'] - df['Low'].rolling(window=window).min()) / 
+                            (df['High'].rolling(window=window).max() - df['Low'].rolling(window=window).min())) * 100
+            df['Stoch_D'] = df['Stoch_K'].rolling(window=min(3, len(df))).mean()
+        
+        # Williams %R
+        if 'High' in df.columns and 'Low' in df.columns:
+            window = min(14, len(df))
+            df['Williams_R'] = ((df['High'].rolling(window=window).max() - df['Close']) / 
+                               (df['High'].rolling(window=window).max() - df['Low'].rolling(window=window).min())) * -100
+        
+        # Commodity Channel Index (CCI)
+        if 'High' in df.columns and 'Low' in df.columns:
+            window = min(20, len(df))
+            typical_price = (df['High'] + df['Low'] + df['Close']) / 3
+            sma_tp = typical_price.rolling(window=window).mean()
+            mean_deviation = typical_price.rolling(window=window).apply(lambda x: np.mean(np.abs(x - x.mean())))
+            df['CCI'] = (typical_price - sma_tp) / (0.015 * mean_deviation)
+        
         # Bollinger Bands
         window = min(20, len(df))
         df['BB_Middle'] = df['Close'].rolling(window=window).mean()
         std_dev = df['Close'].rolling(window=window).std()
         df['BB_Upper'] = df['BB_Middle'] + (std_dev * 2)
         df['BB_Lower'] = df['BB_Middle'] - (std_dev * 2)
+        df['BB_Width'] = (df['BB_Upper'] - df['BB_Lower']) / df['BB_Middle'] * 100  # Bollinger Band Width
+        
+        # Parabolic SAR
+        if 'High' in df.columns and 'Low' in df.columns:
+            df['PSAR'] = calculate_parabolic_sar(df)
+        
+        # Average Directional Index (ADX)
+        if 'High' in df.columns and 'Low' in df.columns:
+            df['ADX'] = calculate_adx(df, min(14, len(df)))
         
         # Volatility Indicators
         df['ATR'] = calculate_atr(df, min(14, len(df)))  # Average True Range
@@ -1643,7 +1675,18 @@ def calculate_technical_indicators(data):
         # Volume Indicators (if volume data is available)
         if 'Volume' in df.columns:
             df['OBV'] = calculate_obv(df)  # On-Balance Volume
+            df['Volume_SMA'] = df['Volume'].rolling(window=min(20, len(df))).mean()
+            df['Volume_Ratio'] = df['Volume'] / df['Volume_SMA']  # Volume ratio for confirmation
             
+        # Price Action Indicators
+        df['Price_Change'] = df['Close'].pct_change() * 100
+        df['Price_Change_5'] = df['Close'].pct_change(periods=5) * 100
+        df['Price_Change_10'] = df['Close'].pct_change(periods=10) * 100
+        
+        # Support and Resistance Levels
+        df['Support_Level'] = df['Low'].rolling(window=min(20, len(df))).min()
+        df['Resistance_Level'] = df['High'].rolling(window=min(20, len(df))).max()
+        
         return df
         
     except Exception as e:
@@ -1686,6 +1729,120 @@ def calculate_atr(data, period=14):
 def calculate_obv(data):
     """Calculate On-Balance Volume."""
     try:
+        if data is None or len(data) < 2:
+            return pd.Series(0, index=data.index if data is not None else [])
+            
+        df = data.copy()
+        
+        if 'Volume' not in df.columns or 'Close' not in df.columns:
+            return pd.Series(0, index=df.index)
+        
+        obv = pd.Series(0.0, index=df.index)
+        obv.iloc[0] = df['Volume'].iloc[0]
+        
+        for i in range(1, len(df)):
+            if df['Close'].iloc[i] > df['Close'].iloc[i-1]:
+                obv.iloc[i] = obv.iloc[i-1] + df['Volume'].iloc[i]
+            elif df['Close'].iloc[i] < df['Close'].iloc[i-1]:
+                obv.iloc[i] = obv.iloc[i-1] - df['Volume'].iloc[i]
+            else:
+                obv.iloc[i] = obv.iloc[i-1]
+        
+        return obv
+    except Exception as e:
+        print(f"Error calculating OBV: {e}")
+        return pd.Series(0, index=data.index if data is not None else [])
+
+def calculate_parabolic_sar(data, acceleration=0.02, maximum=0.2):
+    """Calculate Parabolic SAR."""
+    try:
+        if data is None or len(data) < 2:
+            return pd.Series(0, index=data.index if data is not None else [])
+            
+        df = data.copy()
+        
+        if 'High' not in df.columns or 'Low' not in df.columns:
+            return pd.Series(0, index=df.index)
+        
+        psar = pd.Series(0.0, index=df.index)
+        af = acceleration  # Acceleration factor
+        ep = df['Low'].iloc[0]  # Extreme point
+        long = True  # Long position
+        
+        psar.iloc[0] = df['Low'].iloc[0]
+        
+        for i in range(1, len(df)):
+            if long:
+                psar.iloc[i] = psar.iloc[i-1] + af * (ep - psar.iloc[i-1])
+                
+                if df['Low'].iloc[i] < psar.iloc[i]:
+                    long = False
+                    psar.iloc[i] = ep
+                    ep = df['High'].iloc[i]
+                    af = acceleration
+                else:
+                    if df['High'].iloc[i] > ep:
+                        ep = df['High'].iloc[i]
+                        af = min(af + acceleration, maximum)
+            else:
+                psar.iloc[i] = psar.iloc[i-1] + af * (ep - psar.iloc[i-1])
+                
+                if df['High'].iloc[i] > psar.iloc[i]:
+                    long = True
+                    psar.iloc[i] = ep
+                    ep = df['Low'].iloc[i]
+                    af = acceleration
+                else:
+                    if df['Low'].iloc[i] < ep:
+                        ep = df['Low'].iloc[i]
+                        af = min(af + acceleration, maximum)
+        
+        return psar
+    except Exception as e:
+        print(f"Error calculating Parabolic SAR: {e}")
+        return pd.Series(0, index=data.index if data is not None else [])
+
+def calculate_adx(data, period=14):
+    """Calculate Average Directional Index (ADX)."""
+    try:
+        if data is None or len(data) < period + 1:
+            return pd.Series(0, index=data.index if data is not None else [])
+            
+        df = data.copy()
+        
+        if 'High' not in df.columns or 'Low' not in df.columns:
+            return pd.Series(0, index=df.index)
+        
+        # Calculate True Range
+        df['TR'] = pd.DataFrame({
+            'HL': df['High'] - df['Low'],
+            'HC': abs(df['High'] - df['Close'].shift(1)),
+            'LC': abs(df['Low'] - df['Close'].shift(1))
+        }).max(axis=1)
+        
+        # Calculate Directional Movement
+        df['DM_Plus'] = np.where((df['High'] - df['High'].shift(1)) > (df['Low'].shift(1) - df['Low']),
+                                np.maximum(df['High'] - df['High'].shift(1), 0), 0)
+        df['DM_Minus'] = np.where((df['Low'].shift(1) - df['Low']) > (df['High'] - df['High'].shift(1)),
+                                 np.maximum(df['Low'].shift(1) - df['Low'], 0), 0)
+        
+        # Smooth the values
+        df['TR_Smooth'] = df['TR'].rolling(window=period).mean()
+        df['DM_Plus_Smooth'] = df['DM_Plus'].rolling(window=period).mean()
+        df['DM_Minus_Smooth'] = df['DM_Minus'].rolling(window=period).mean()
+        
+        # Calculate Directional Indicators
+        df['DI_Plus'] = 100 * df['DM_Plus_Smooth'] / df['TR_Smooth']
+        df['DI_Minus'] = 100 * df['DM_Minus_Smooth'] / df['TR_Smooth']
+        
+        # Calculate ADX
+        df['DX'] = 100 * abs(df['DI_Plus'] - df['DI_Minus']) / (df['DI_Plus'] + df['DI_Minus'])
+        df['ADX'] = df['DX'].rolling(window=period).mean()
+        
+        return df['ADX']
+    except Exception as e:
+        print(f"Error calculating ADX: {e}")
+        return pd.Series(0, index=data.index if data is not None else [])
         if 'Volume' not in data.columns:
             print("Volume column missing for OBV calculation")
             return pd.Series(0, index=data.index)
@@ -3485,44 +3642,58 @@ def market_aware_forecast(data, periods=5, timeframe="1day", symbol="AAPL"):
 # ---------------------------
 def generate_live_trading_signals(data, timeframe):
     """
-    Generate live buy/sell signals based on technical analysis and price action.
-    Returns signal data that can be plotted on the chart.
+    Generate powerful buy/sell signals using advanced technical analysis and multi-indicator confirmation.
+    Based on the TradingView Ultimate Buy and Sell Indicator approach.
     """
     try:
-        if data is None or len(data) < 20:
+        if data is None or len(data) < 50:
             return []
         
-        # Calculate technical indicators
+        # Calculate comprehensive technical indicators
         data_with_indicators = calculate_technical_indicators(data)
         
         signals = []
-        signal_lookback = min(50, len(data_with_indicators) - 1)  # Look back 50 bars or less
+        signal_lookback = min(100, len(data_with_indicators) - 1)
+        
+        # Track watch signals (Bollinger Band crossovers and momentum shifts)
+        watch_signals = []
         
         for i in range(signal_lookback, len(data_with_indicators)):
             current_price = data_with_indicators['Close'].iloc[i]
             current_date = data_with_indicators.index[i]
             
-            # Get recent data for analysis
-            recent_data = data_with_indicators.iloc[max(0, i-20):i+1]
+            # Get recent data for analysis (last 30 bars for better context)
+            recent_data = data_with_indicators.iloc[max(0, i-30):i+1]
             
-            # Calculate signal strength and type
+            # Initialize signal scoring system
+            buy_score = 0
+            sell_score = 0
             signal_type = "hold"
             signal_strength = "weak"
             confidence = 0.0
             
-            # RSI-based signals
+            # 1. RSI Analysis (Weight: 20%)
             if 'RSI' in recent_data.columns and not pd.isna(recent_data['RSI'].iloc[-1]):
                 rsi = recent_data['RSI'].iloc[-1]
+                rsi_prev = recent_data['RSI'].iloc[-2] if len(recent_data) > 1 else rsi
+                
+                # Oversold conditions
                 if rsi < 30:
-                    signal_type = "buy"
-                    signal_strength = "strong" if rsi < 20 else "moderate"
-                    confidence = 0.8 if rsi < 20 else 0.6
-                elif rsi > 70:
-                    signal_type = "sell"
-                    signal_strength = "strong" if rsi > 80 else "moderate"
-                    confidence = 0.8 if rsi > 80 else 0.6
+                    buy_score += 20
+                    if rsi < 20:
+                        buy_score += 10  # Extra strong oversold
+                elif rsi < 40 and rsi > rsi_prev:
+                    buy_score += 10  # RSI turning up from oversold
+                
+                # Overbought conditions
+                if rsi > 70:
+                    sell_score += 20
+                    if rsi > 80:
+                        sell_score += 10  # Extra strong overbought
+                elif rsi > 60 and rsi < rsi_prev:
+                    sell_score += 10  # RSI turning down from overbought
             
-            # MACD-based signals
+            # 2. MACD Analysis (Weight: 15%)
             if 'MACD' in recent_data.columns and 'MACD_Signal' in recent_data.columns:
                 macd = recent_data['MACD'].iloc[-1]
                 macd_signal = recent_data['MACD_Signal'].iloc[-1]
@@ -3531,89 +3702,220 @@ def generate_live_trading_signals(data, timeframe):
                 
                 # MACD crossover signals
                 if macd > macd_signal and macd_prev <= macd_signal_prev:
-                    if signal_type == "hold":
-                        signal_type = "buy"
-                        signal_strength = "moderate"
-                        confidence = 0.7
+                    buy_score += 15
                 elif macd < macd_signal and macd_prev >= macd_signal_prev:
-                    if signal_type == "hold":
-                        signal_type = "sell"
-                        signal_strength = "moderate"
-                        confidence = 0.7
+                    sell_score += 15
+                
+                # MACD histogram momentum
+                if 'MACD_Hist' in recent_data.columns:
+                    macd_hist = recent_data['MACD_Hist'].iloc[-1]
+                    macd_hist_prev = recent_data['MACD_Hist'].iloc[-2] if len(recent_data) > 1 else macd_hist
+                    
+                    if macd_hist > 0 and macd_hist > macd_hist_prev:
+                        buy_score += 5
+                    elif macd_hist < 0 and macd_hist < macd_hist_prev:
+                        sell_score += 5
             
-            # Bollinger Bands signals
-            if all(col in recent_data.columns for col in ['BB_Upper', 'BB_Lower', 'Close']):
+            # 3. Bollinger Bands Analysis (Weight: 15%)
+            if all(col in recent_data.columns for col in ['BB_Upper', 'BB_Lower', 'BB_Width']):
                 bb_upper = recent_data['BB_Upper'].iloc[-1]
                 bb_lower = recent_data['BB_Lower'].iloc[-1]
+                bb_width = recent_data['BB_Width'].iloc[-1]
                 
-                if current_price <= bb_lower and signal_type == "hold":
-                    signal_type = "buy"
-                    signal_strength = "moderate"
-                    confidence = 0.6
-                elif current_price >= bb_upper and signal_type == "hold":
-                    signal_type = "sell"
-                    signal_strength = "moderate"
-                    confidence = 0.6
+                # Price at Bollinger Band extremes
+                if current_price <= bb_lower:
+                    buy_score += 15
+                    if bb_width > 5:  # High volatility - stronger signal
+                        buy_score += 5
+                elif current_price >= bb_upper:
+                    sell_score += 15
+                    if bb_width > 5:  # High volatility - stronger signal
+                        sell_score += 5
+                
+                # Bollinger Band squeeze (low volatility before breakout)
+                if bb_width < 2 and len(recent_data) >= 5:
+                    bb_width_avg = recent_data['BB_Width'].iloc[-5:].mean()
+                    if bb_width < bb_width_avg * 0.5:
+                        # Potential breakout coming
+                        if current_price > recent_data['BB_Middle'].iloc[-1]:
+                            buy_score += 10
+                        else:
+                            sell_score += 10
             
-            # Moving Average signals
-            if 'SMA_20' in recent_data.columns and 'SMA_50' in recent_data.columns:
+            # 4. Moving Average Analysis (Weight: 15%)
+            if all(col in recent_data.columns for col in ['SMA_20', 'SMA_50', 'EMA_12', 'EMA_26']):
                 sma_20 = recent_data['SMA_20'].iloc[-1]
                 sma_50 = recent_data['SMA_50'].iloc[-1]
-                sma_20_prev = recent_data['SMA_20'].iloc[-2] if len(recent_data) > 1 else sma_20
-                sma_50_prev = recent_data['SMA_50'].iloc[-2] if len(recent_data) > 1 else sma_50
+                ema_12 = recent_data['EMA_12'].iloc[-1]
+                ema_26 = recent_data['EMA_26'].iloc[-1]
                 
                 # Golden Cross (SMA 20 crosses above SMA 50)
-                if sma_20 > sma_50 and sma_20_prev <= sma_50_prev and signal_type == "hold":
-                    signal_type = "buy"
-                    signal_strength = "strong"
-                    confidence = 0.8
+                if sma_20 > sma_50 and len(recent_data) > 1:
+                    sma_20_prev = recent_data['SMA_20'].iloc[-2]
+                    sma_50_prev = recent_data['SMA_50'].iloc[-2]
+                    if sma_20_prev <= sma_50_prev:
+                        buy_score += 20  # Strong trend signal
+                
                 # Death Cross (SMA 20 crosses below SMA 50)
-                elif sma_20 < sma_50 and sma_20_prev >= sma_50_prev and signal_type == "hold":
-                    signal_type = "sell"
-                    signal_strength = "strong"
-                    confidence = 0.8
+                elif sma_20 < sma_50 and len(recent_data) > 1:
+                    sma_20_prev = recent_data['SMA_20'].iloc[-2]
+                    sma_50_prev = recent_data['SMA_50'].iloc[-2]
+                    if sma_20_prev >= sma_50_prev:
+                        sell_score += 20  # Strong trend signal
+                
+                # EMA crossover
+                if ema_12 > ema_26 and len(recent_data) > 1:
+                    ema_12_prev = recent_data['EMA_12'].iloc[-2]
+                    ema_26_prev = recent_data['EMA_26'].iloc[-2]
+                    if ema_12_prev <= ema_26_prev:
+                        buy_score += 10
+                elif ema_12 < ema_26 and len(recent_data) > 1:
+                    ema_12_prev = recent_data['EMA_12'].iloc[-2]
+                    ema_26_prev = recent_data['EMA_26'].iloc[-2]
+                    if ema_12_prev >= ema_26_prev:
+                        sell_score += 10
             
-            # Price action signals (support/resistance breaks)
+            # 5. Stochastic Oscillator (Weight: 10%)
+            if all(col in recent_data.columns for col in ['Stoch_K', 'Stoch_D']):
+                stoch_k = recent_data['Stoch_K'].iloc[-1]
+                stoch_d = recent_data['Stoch_D'].iloc[-1]
+                
+                # Oversold crossover
+                if stoch_k < 20 and stoch_k > stoch_d and len(recent_data) > 1:
+                    stoch_k_prev = recent_data['Stoch_K'].iloc[-2]
+                    stoch_d_prev = recent_data['Stoch_D'].iloc[-2]
+                    if stoch_k_prev <= stoch_d_prev:
+                        buy_score += 10
+                
+                # Overbought crossover
+                elif stoch_k > 80 and stoch_k < stoch_d and len(recent_data) > 1:
+                    stoch_k_prev = recent_data['Stoch_K'].iloc[-2]
+                    stoch_d_prev = recent_data['Stoch_D'].iloc[-2]
+                    if stoch_k_prev >= stoch_d_prev:
+                        sell_score += 10
+            
+            # 6. Williams %R (Weight: 10%)
+            if 'Williams_R' in recent_data.columns and not pd.isna(recent_data['Williams_R'].iloc[-1]):
+                williams_r = recent_data['Williams_R'].iloc[-1]
+                
+                if williams_r < -80:
+                    buy_score += 10
+                elif williams_r > -20:
+                    sell_score += 10
+            
+            # 7. CCI (Commodity Channel Index) (Weight: 10%)
+            if 'CCI' in recent_data.columns and not pd.isna(recent_data['CCI'].iloc[-1]):
+                cci = recent_data['CCI'].iloc[-1]
+                
+                if cci < -100:
+                    buy_score += 10
+                elif cci > 100:
+                    sell_score += 10
+            
+            # 8. Parabolic SAR (Weight: 5%)
+            if 'PSAR' in recent_data.columns and not pd.isna(recent_data['PSAR'].iloc[-1]):
+                psar = recent_data['PSAR'].iloc[-1]
+                
+                if current_price > psar:
+                    buy_score += 5
+                else:
+                    sell_score += 5
+            
+            # 9. ADX (Average Directional Index) - Trend Strength (Weight: 5%)
+            if 'ADX' in recent_data.columns and not pd.isna(recent_data['ADX'].iloc[-1]):
+                adx = recent_data['ADX'].iloc[-1]
+                
+                # Strong trend confirmation
+                if adx > 25:
+                    if buy_score > sell_score:
+                        buy_score += 5
+                    elif sell_score > buy_score:
+                        sell_score += 5
+            
+            # 10. Volume Confirmation (Weight: 5%)
+            if 'Volume_Ratio' in recent_data.columns and not pd.isna(recent_data['Volume_Ratio'].iloc[-1]):
+                volume_ratio = recent_data['Volume_Ratio'].iloc[-1]
+                
+                if volume_ratio > 1.5:  # High volume
+                    if buy_score > sell_score:
+                        buy_score += 5
+                    elif sell_score > buy_score:
+                        sell_score += 5
+            
+            # 11. Price Action and Support/Resistance (Weight: 10%)
             if len(recent_data) >= 10:
                 recent_highs = recent_data['High'].rolling(window=10).max()
                 recent_lows = recent_data['Low'].rolling(window=10).min()
                 
                 # Breakout above recent highs
-                if current_price > recent_highs.iloc[-2] and signal_type == "hold":
-                    signal_type = "buy"
-                    signal_strength = "moderate"
-                    confidence = 0.6
+                if current_price > recent_highs.iloc[-2]:
+                    buy_score += 10
                 # Breakdown below recent lows
-                elif current_price < recent_lows.iloc[-2] and signal_type == "hold":
-                    signal_type = "sell"
-                    signal_strength = "moderate"
-                    confidence = 0.6
+                elif current_price < recent_lows.iloc[-2]:
+                    sell_score += 10
             
-            # Only add signals with sufficient confidence
+            # Determine final signal based on scoring
+            if buy_score > sell_score and buy_score >= 30:  # Minimum threshold
+                signal_type = "buy"
+                if buy_score >= 60:
+                    signal_strength = "strong"
+                    confidence = min(0.9, buy_score / 100)
+                elif buy_score >= 40:
+                    signal_strength = "moderate"
+                    confidence = min(0.7, buy_score / 100)
+                else:
+                    signal_strength = "weak"
+                    confidence = min(0.5, buy_score / 100)
+            
+            elif sell_score > buy_score and sell_score >= 30:  # Minimum threshold
+                signal_type = "sell"
+                if sell_score >= 60:
+                    signal_strength = "strong"
+                    confidence = min(0.9, sell_score / 100)
+                elif sell_score >= 40:
+                    signal_strength = "moderate"
+                    confidence = min(0.7, sell_score / 100)
+                else:
+                    signal_strength = "weak"
+                    confidence = min(0.5, sell_score / 100)
+            
+            # Only add signals with sufficient confidence and avoid signal clustering
             if signal_type != "hold" and confidence >= 0.5:
-                signal_data = {
-                    "date": current_date.strftime("%Y-%m-%dT%H:%M:%SZ"),
-                    "price": float(current_price),
-                    "type": signal_type,
-                    "strength": signal_strength,
-                    "confidence": round(confidence, 2),
-                    "indicators": {
-                        "rsi": float(recent_data['RSI'].iloc[-1]) if 'RSI' in recent_data.columns and not pd.isna(recent_data['RSI'].iloc[-1]) else None,
-                        "macd": float(recent_data['MACD'].iloc[-1]) if 'MACD' in recent_data.columns else None,
-                        "sma_20": float(recent_data['SMA_20'].iloc[-1]) if 'SMA_20' in recent_data.columns else None,
-                        "sma_50": float(recent_data['SMA_50'].iloc[-1]) if 'SMA_50' in recent_data.columns else None
+                # Check if we already have a recent signal of the same type
+                recent_same_signals = [s for s in signals[-5:] if s['type'] == signal_type]
+                if len(recent_same_signals) < 2:  # Limit consecutive signals
+                    signal_data = {
+                        "date": current_date.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                        "price": float(current_price),
+                        "type": signal_type,
+                        "strength": signal_strength,
+                        "confidence": round(confidence, 2),
+                        "score": max(buy_score, sell_score),
+                        "indicators": {
+                            "rsi": float(recent_data['RSI'].iloc[-1]) if 'RSI' in recent_data.columns and not pd.isna(recent_data['RSI'].iloc[-1]) else None,
+                            "macd": float(recent_data['MACD'].iloc[-1]) if 'MACD' in recent_data.columns else None,
+                            "stoch_k": float(recent_data['Stoch_K'].iloc[-1]) if 'Stoch_K' in recent_data.columns else None,
+                            "williams_r": float(recent_data['Williams_R'].iloc[-1]) if 'Williams_R' in recent_data.columns else None,
+                            "cci": float(recent_data['CCI'].iloc[-1]) if 'CCI' in recent_data.columns else None,
+                            "adx": float(recent_data['ADX'].iloc[-1]) if 'ADX' in recent_data.columns else None,
+                            "sma_20": float(recent_data['SMA_20'].iloc[-1]) if 'SMA_20' in recent_data.columns else None,
+                            "sma_50": float(recent_data['SMA_50'].iloc[-1]) if 'SMA_50' in recent_data.columns else None,
+                            "bb_width": float(recent_data['BB_Width'].iloc[-1]) if 'BB_Width' in recent_data.columns else None,
+                            "volume_ratio": float(recent_data['Volume_Ratio'].iloc[-1]) if 'Volume_Ratio' in recent_data.columns else None
+                        }
                     }
-                }
-                signals.append(signal_data)
+                    signals.append(signal_data)
         
-        # Limit to recent signals (last 20)
-        recent_signals = signals[-20:] if len(signals) > 20 else signals
+        # Limit to recent signals (last 15 for cleaner display)
+        recent_signals = signals[-15:] if len(signals) > 15 else signals
         
-        print(f"Generated {len(recent_signals)} live trading signals for {timeframe}")
+        print(f"Generated {len(recent_signals)} enhanced live trading signals for {timeframe}")
         return recent_signals
         
     except Exception as e:
-        print(f"Error generating live trading signals: {e}")
+        print(f"Error generating enhanced live trading signals: {e}")
+        import traceback
+        traceback.print_exc()
         return []
 
 def generate_forecast_ohlc(data, forecast):
