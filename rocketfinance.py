@@ -1587,7 +1587,10 @@ def get_placeholder_news(symbol):
 # Technical Indicators Calculation
 # ---------------------------
 def calculate_technical_indicators(data):
-    """Calculate comprehensive technical indicators for enhanced signal generation."""
+    """
+    Calculate comprehensive technical indicators for enhanced signal generation.
+    Enhanced with additional advanced indicators for better signal generation.
+    """
     try:
         if data is None or len(data) == 0:
             print("Cannot calculate indicators on None or empty data")
@@ -1606,86 +1609,209 @@ def calculate_technical_indicators(data):
         
         df = data.copy()
         
-        # Moving Averages
-        df['SMA_20'] = df['Close'].rolling(window=min(20, len(df))).mean()
-        df['SMA_50'] = df['Close'].rolling(window=min(50, len(df))).mean()
-        df['SMA_200'] = df['Close'].rolling(window=min(200, len(df))).mean()
-        df['EMA_12'] = df['Close'].ewm(span=min(12, len(df)), adjust=False).mean()
-        df['EMA_26'] = df['Close'].ewm(span=min(26, len(df)), adjust=False).mean()
-        df['EMA_50'] = df['Close'].ewm(span=min(50, len(df)), adjust=False).mean()
-        
-        # MACD
-        df['MACD'] = df['EMA_12'] - df['EMA_26']
-        df['MACD_Signal'] = df['MACD'].ewm(span=min(9, len(df)), adjust=False).mean()
-        df['MACD_Hist'] = df['MACD'] - df['MACD_Signal']
-        
-        # RSI (Relative Strength Index)
+        # RSI (Relative Strength Index) - Enhanced with multiple timeframes
         delta = df['Close'].diff()
         gain = delta.where(delta > 0, 0)
         loss = -delta.where(delta < 0, 0)
-        avg_gain = gain.rolling(window=min(14, len(df))).mean()
-        avg_loss = loss.rolling(window=min(14, len(df))).mean()
         
-        # Handle division by zero
-        avg_loss = avg_loss.replace(0, np.nan)
-        rs = avg_gain / avg_loss
-        rs = rs.replace(np.nan, 0)
-        df['RSI'] = 100 - (100 / (1 + rs))
+        # Multiple RSI periods for better confirmation
+        for period in [14, 21, 50]:
+            avg_gain = gain.rolling(window=min(period, len(df))).mean()
+            avg_loss = loss.rolling(window=min(period, len(df))).mean()
+            avg_loss = avg_loss.replace(0, np.nan)
+            rs = avg_gain / avg_loss
+            rs = rs.replace(np.nan, 0)
+            df[f'RSI_{period}'] = 100 - (100 / (1 + rs))
         
-        # Stochastic Oscillator
+        # Main RSI (14-period)
+        df['RSI'] = df['RSI_14']
+        
+        # Moving Averages - Enhanced with more periods and types
+        for period in [5, 10, 20, 50, 100, 200]:
+            df[f'SMA_{period}'] = df['Close'].rolling(window=min(period, len(df))).mean()
+            df[f'EMA_{period}'] = df['Close'].ewm(span=min(period, len(df)), adjust=False).mean()
+        
+        # Weighted Moving Average (WMA)
+        for period in [10, 20, 50]:
+            weights = np.arange(1, min(period, len(df)) + 1)
+            df[f'WMA_{period}'] = df['Close'].rolling(window=min(period, len(df))).apply(
+                lambda x: np.dot(x, weights[:len(x)]) / weights[:len(x)].sum(), raw=True
+            )
+        
+        # Hull Moving Average (HMA) - Smoother and more responsive
+        for period in [10, 20, 50]:
+            wma_half = df['Close'].rolling(window=min(period//2, len(df))).apply(
+                lambda x: np.dot(x, np.arange(1, len(x)+1)) / np.arange(1, len(x)+1).sum(), raw=True
+            )
+            wma_full = df['Close'].rolling(window=min(period, len(df))).apply(
+                lambda x: np.dot(x, np.arange(1, len(x)+1)) / np.arange(1, len(x)+1).sum(), raw=True
+            )
+            raw_hma = 2 * wma_half - wma_full
+            df[f'HMA_{period}'] = raw_hma.rolling(window=min(int(np.sqrt(period)), len(df))).apply(
+                lambda x: np.dot(x, np.arange(1, len(x)+1)) / np.arange(1, len(x)+1).sum(), raw=True
+            )
+        
+        # MACD - Enhanced with multiple signal lines
+        df['MACD'] = df['EMA_12'] - df['EMA_26']
+        df['MACD_Signal'] = df['MACD'].ewm(span=min(9, len(df)), adjust=False).mean()
+        df['MACD_Hist'] = df['MACD'] - df['MACD_Signal']
+        df['MACD_Signal_2'] = df['MACD'].ewm(span=min(21, len(df)), adjust=False).mean()  # Longer signal line
+        
+        # Stochastic Oscillator - Enhanced with multiple periods
         if 'High' in df.columns and 'Low' in df.columns:
-            window = min(14, len(df))
-            df['Stoch_K'] = ((df['Close'] - df['Low'].rolling(window=window).min()) / 
-                            (df['High'].rolling(window=window).max() - df['Low'].rolling(window=window).min())) * 100
-            df['Stoch_D'] = df['Stoch_K'].rolling(window=min(3, len(df))).mean()
+            for period in [14, 21]:
+                window = min(period, len(df))
+                df[f'Stoch_K_{period}'] = ((df['Close'] - df['Low'].rolling(window=window).min()) / 
+                                (df['High'].rolling(window=window).max() - df['Low'].rolling(window=window).min())) * 100
+                df[f'Stoch_D_{period}'] = df[f'Stoch_K_{period}'].rolling(window=min(3, len(df))).mean()
+            
+            # Main Stochastic
+            df['Stoch_K'] = df['Stoch_K_14']
+            df['Stoch_D'] = df['Stoch_D_14']
         
-        # Williams %R
+        # Williams %R - Enhanced with multiple periods
         if 'High' in df.columns and 'Low' in df.columns:
-            window = min(14, len(df))
-            df['Williams_R'] = ((df['High'].rolling(window=window).max() - df['Close']) / 
-                               (df['High'].rolling(window=window).max() - df['Low'].rolling(window=window).min())) * -100
+            for period in [14, 21]:
+                window = min(period, len(df))
+                df[f'Williams_R_{period}'] = ((df['High'].rolling(window=window).max() - df['Close']) / 
+                                   (df['High'].rolling(window=window).max() - df['Low'].rolling(window=window).min())) * -100
+            
+            df['Williams_R'] = df['Williams_R_14']
         
-        # Commodity Channel Index (CCI)
+        # Commodity Channel Index (CCI) - Enhanced with multiple periods
         if 'High' in df.columns and 'Low' in df.columns:
-            window = min(20, len(df))
-            typical_price = (df['High'] + df['Low'] + df['Close']) / 3
-            sma_tp = typical_price.rolling(window=window).mean()
-            mean_deviation = typical_price.rolling(window=window).apply(lambda x: np.mean(np.abs(x - x.mean())))
-            df['CCI'] = (typical_price - sma_tp) / (0.015 * mean_deviation)
+            for period in [20, 40]:
+                window = min(period, len(df))
+                typical_price = (df['High'] + df['Low'] + df['Close']) / 3
+                sma_tp = typical_price.rolling(window=window).mean()
+                mean_deviation = typical_price.rolling(window=window).apply(lambda x: np.mean(np.abs(x - x.mean())))
+                df[f'CCI_{period}'] = (typical_price - sma_tp) / (0.015 * mean_deviation)
+            
+            df['CCI'] = df['CCI_20']
         
-        # Bollinger Bands
-        window = min(20, len(df))
-        df['BB_Middle'] = df['Close'].rolling(window=window).mean()
-        std_dev = df['Close'].rolling(window=window).std()
-        df['BB_Upper'] = df['BB_Middle'] + (std_dev * 2)
-        df['BB_Lower'] = df['BB_Middle'] - (std_dev * 2)
-        df['BB_Width'] = (df['BB_Upper'] - df['BB_Lower']) / df['BB_Middle'] * 100  # Bollinger Band Width
+        # Bollinger Bands - Enhanced with multiple periods and %B
+        for period in [20, 50]:
+            window = min(period, len(df))
+            df[f'BB_Middle_{period}'] = df['Close'].rolling(window=window).mean()
+            std_dev = df['Close'].rolling(window=window).std()
+            df[f'BB_Upper_{period}'] = df[f'BB_Middle_{period}'] + (std_dev * 2)
+            df[f'BB_Lower_{period}'] = df[f'BB_Middle_{period}'] - (std_dev * 2)
+            df[f'BB_Width_{period}'] = (df[f'BB_Upper_{period}'] - df[f'BB_Lower_{period}']) / df[f'BB_Middle_{period}'] * 100
+            df[f'BB_Percent_B_{period}'] = (df['Close'] - df[f'BB_Lower_{period}']) / (df[f'BB_Upper_{period}'] - df[f'BB_Lower_{period}'])
         
-        # Parabolic SAR
+        # Main Bollinger Bands
+        df['BB_Middle'] = df['BB_Middle_20']
+        df['BB_Upper'] = df['BB_Upper_20']
+        df['BB_Lower'] = df['BB_Lower_20']
+        df['BB_Width'] = df['BB_Width_20']
+        df['BB_Percent_B'] = df['BB_Percent_B_20']
+        
+        # Parabolic SAR - Enhanced with multiple acceleration factors
         if 'High' in df.columns and 'Low' in df.columns:
             df['PSAR'] = calculate_parabolic_sar(df)
+            df['PSAR_Aggressive'] = calculate_parabolic_sar(df, acceleration=0.03, maximum=0.3)
+            df['PSAR_Conservative'] = calculate_parabolic_sar(df, acceleration=0.01, maximum=0.1)
         
-        # Average Directional Index (ADX)
+        # Average Directional Index (ADX) - Enhanced with multiple periods
         if 'High' in df.columns and 'Low' in df.columns:
-            df['ADX'] = calculate_adx(df, min(14, len(df)))
-        
-        # Volatility Indicators
-        df['ATR'] = calculate_atr(df, min(14, len(df)))  # Average True Range
-        
-        # Volume Indicators (if volume data is available)
-        if 'Volume' in df.columns:
-            df['OBV'] = calculate_obv(df)  # On-Balance Volume
-            df['Volume_SMA'] = df['Volume'].rolling(window=min(20, len(df))).mean()
-            df['Volume_Ratio'] = df['Volume'] / df['Volume_SMA']  # Volume ratio for confirmation
+            for period in [14, 21]:
+                df[f'ADX_{period}'] = calculate_adx(df, min(period, len(df)))
             
-        # Price Action Indicators
+            df['ADX'] = df['ADX_14']
+        
+        # Volatility Indicators - Enhanced
+        df['ATR'] = calculate_atr(df, min(14, len(df)))
+        df['ATR_21'] = calculate_atr(df, min(21, len(df)))
+        
+        # True Range Percentage
+        df['TR_Percent'] = (df['ATR'] / df['Close']) * 100
+        
+        # Volatility Ratio (Current ATR vs Historical ATR)
+        df['Volatility_Ratio'] = df['ATR'] / df['ATR'].rolling(window=min(50, len(df))).mean()
+        
+        # Volume Indicators - Enhanced with more sophisticated metrics
+        if 'Volume' in df.columns:
+            df['OBV'] = calculate_obv(df)
+            df['Volume_SMA'] = df['Volume'].rolling(window=min(20, len(df))).mean()
+            df['Volume_Ratio'] = df['Volume'] / df['Volume_SMA']
+            
+            # Volume Price Trend (VPT)
+            df['VPT'] = (df['Volume'] * ((df['Close'] - df['Close'].shift(1)) / df['Close'].shift(1))).cumsum()
+            
+            # Money Flow Index (MFI)
+            typical_price = (df['High'] + df['Low'] + df['Close']) / 3
+            money_flow = typical_price * df['Volume']
+            positive_flow = money_flow.where(typical_price > typical_price.shift(1), 0).rolling(window=min(14, len(df))).sum()
+            negative_flow = money_flow.where(typical_price < typical_price.shift(1), 0).rolling(window=min(14, len(df))).sum()
+            mfi_ratio = positive_flow / negative_flow
+            df['MFI'] = 100 - (100 / (1 + mfi_ratio))
+            
+            # Chaikin Money Flow (CMF)
+            mfm = ((df['Close'] - df['Low']) - (df['High'] - df['Close'])) / (df['High'] - df['Low'])
+            mfm = mfm.replace([np.inf, -np.inf], 0)
+            mfv = mfm * df['Volume']
+            df['CMF'] = mfv.rolling(window=min(20, len(df))).sum() / df['Volume'].rolling(window=min(20, len(df))).sum()
+            
+        # Price Action Indicators - Enhanced
         df['Price_Change'] = df['Close'].pct_change() * 100
         df['Price_Change_5'] = df['Close'].pct_change(periods=5) * 100
         df['Price_Change_10'] = df['Close'].pct_change(periods=10) * 100
+        df['Price_Change_20'] = df['Close'].pct_change(periods=20) * 100
         
-        # Support and Resistance Levels
-        df['Support_Level'] = df['Low'].rolling(window=min(20, len(df))).min()
-        df['Resistance_Level'] = df['High'].rolling(window=min(20, len(df))).max()
+        # Rate of Change (ROC)
+        for period in [10, 20, 50]:
+            df[f'ROC_{period}'] = ((df['Close'] - df['Close'].shift(period)) / df['Close'].shift(period)) * 100
+        
+        # Momentum Indicators
+        df['Momentum'] = df['Close'] - df['Close'].shift(10)
+        df['Momentum_20'] = df['Close'] - df['Close'].shift(20)
+        
+        # Support and Resistance Levels - Enhanced
+        for period in [20, 50]:
+            df[f'Support_Level_{period}'] = df['Low'].rolling(window=min(period, len(df))).min()
+            df[f'Resistance_Level_{period}'] = df['High'].rolling(window=min(period, len(df))).max()
+        
+        df['Support_Level'] = df['Support_Level_20']
+        df['Resistance_Level'] = df['Resistance_Level_20']
+        
+        # Pivot Points
+        df['Pivot'] = (df['High'] + df['Low'] + df['Close']) / 3
+        df['R1'] = 2 * df['Pivot'] - df['Low']
+        df['S1'] = 2 * df['Pivot'] - df['High']
+        df['R2'] = df['Pivot'] + (df['High'] - df['Low'])
+        df['S2'] = df['Pivot'] - (df['High'] - df['Low'])
+        
+        # Ichimoku Cloud Components
+        high_9 = df['High'].rolling(window=min(9, len(df))).max()
+        low_9 = df['Low'].rolling(window=min(9, len(df))).min()
+        df['Tenkan_Sen'] = (high_9 + low_9) / 2
+        
+        high_26 = df['High'].rolling(window=min(26, len(df))).max()
+        low_26 = df['Low'].rolling(window=min(26, len(df))).min()
+        df['Kijun_Sen'] = (high_26 + low_26) / 2
+        
+        df['Senkou_Span_A'] = ((df['Tenkan_Sen'] + df['Kijun_Sen']) / 2).shift(26)
+        
+        high_52 = df['High'].rolling(window=min(52, len(df))).max()
+        low_52 = df['Low'].rolling(window=min(52, len(df))).min()
+        df['Senkou_Span_B'] = ((high_52 + low_52) / 2).shift(26)
+        
+        # Fibonacci Retracement Levels (based on recent swing high/low)
+        recent_high = df['High'].rolling(window=min(20, len(df))).max()
+        recent_low = df['Low'].rolling(window=min(20, len(df))).min()
+        diff = recent_high - recent_low
+        df['Fib_23_6'] = recent_high - (diff * 0.236)
+        df['Fib_38_2'] = recent_high - (diff * 0.382)
+        df['Fib_50_0'] = recent_high - (diff * 0.500)
+        df['Fib_61_8'] = recent_high - (diff * 0.618)
+        
+        # Trend Strength Indicators
+        df['Trend_Strength'] = abs(df['SMA_20'] - df['SMA_50']) / df['SMA_50'] * 100
+        
+        # Price Position Indicators
+        df['Price_vs_SMA20'] = (df['Close'] - df['SMA_20']) / df['SMA_20'] * 100
+        df['Price_vs_SMA50'] = (df['Close'] - df['SMA_50']) / df['SMA_50'] * 100
+        df['Price_vs_SMA200'] = (df['Close'] - df['SMA_200']) / df['SMA_200'] * 100
         
         return df
         
@@ -3685,28 +3811,32 @@ def generate_live_trading_signals(data, timeframe):
             signal_strength = "weak"
             confidence = 0.0
             
-            # 1. RSI Analysis (Weight: 20%)
-            if 'RSI' in recent_data.columns and not pd.isna(recent_data['RSI'].iloc[-1]):
-                rsi = recent_data['RSI'].iloc[-1]
-                rsi_prev = recent_data['RSI'].iloc[-2] if len(recent_data) > 1 and not pd.isna(recent_data['RSI'].iloc[-2]) else rsi
-                
-                # Oversold conditions
-                if rsi < 30:
-                    buy_score += 20
-                    if rsi < 20:
-                        buy_score += 10  # Extra strong oversold
-                elif rsi < 40 and rsi > rsi_prev:
-                    buy_score += 10  # RSI turning up from oversold
-                
-                # Overbought conditions
-                if rsi > 70:
-                    sell_score += 20
-                    if rsi > 80:
-                        sell_score += 10  # Extra strong overbought
-                elif rsi > 60 and rsi < rsi_prev:
-                    sell_score += 10  # RSI turning down from overbought
+            # 1. RSI Analysis (Weight: 25%) - Enhanced with multiple timeframes
+            for rsi_period in ['RSI', 'RSI_21', 'RSI_50']:
+                if rsi_period in recent_data.columns and not pd.isna(recent_data[rsi_period].iloc[-1]):
+                    rsi = recent_data[rsi_period].iloc[-1]
+                    rsi_prev = recent_data[rsi_period].iloc[-2] if len(recent_data) > 1 and not pd.isna(recent_data[rsi_period].iloc[-2]) else rsi
+                    
+                    # Weight based on timeframe (shorter = more weight)
+                    weight = 25 if rsi_period == 'RSI' else (15 if rsi_period == 'RSI_21' else 10)
+                    
+                    # Oversold conditions
+                    if rsi < 30:
+                        buy_score += weight
+                        if rsi < 20:
+                            buy_score += weight // 2  # Extra strong oversold
+                    elif rsi < 40 and rsi > rsi_prev:
+                        buy_score += weight // 2  # RSI turning up from oversold
+                    
+                    # Overbought conditions
+                    if rsi > 70:
+                        sell_score += weight
+                        if rsi > 80:
+                            sell_score += weight // 2  # Extra strong overbought
+                    elif rsi > 60 and rsi < rsi_prev:
+                        sell_score += weight // 2  # RSI turning down from overbought
             
-            # 2. MACD Analysis (Weight: 15%)
+                        # 2. MACD Analysis (Weight: 20%) - Enhanced with multiple signal lines
             if 'MACD' in recent_data.columns and 'MACD_Signal' in recent_data.columns:
                 macd = recent_data['MACD'].iloc[-1]
                 macd_signal = recent_data['MACD_Signal'].iloc[-1]
@@ -3720,17 +3850,26 @@ def generate_live_trading_signals(data, timeframe):
                         buy_score += 15
                     elif macd < macd_signal and macd_prev >= macd_signal_prev:
                         sell_score += 15
+                
+                # MACD histogram momentum
+                if 'MACD_Hist' in recent_data.columns:
+                    macd_hist = recent_data['MACD_Hist'].iloc[-1]
+                    macd_hist_prev = recent_data['MACD_Hist'].iloc[-2] if len(recent_data) > 1 and not pd.isna(recent_data['MACD_Hist'].iloc[-2]) else macd_hist
                     
-                    # MACD histogram momentum
-                    if 'MACD_Hist' in recent_data.columns:
-                        macd_hist = recent_data['MACD_Hist'].iloc[-1]
-                        macd_hist_prev = recent_data['MACD_Hist'].iloc[-2] if len(recent_data) > 1 and not pd.isna(recent_data['MACD_Hist'].iloc[-2]) else macd_hist
-                        
-                        if not pd.isna(macd_hist) and not pd.isna(macd_hist_prev):
-                            if macd_hist > 0 and macd_hist > macd_hist_prev:
-                                buy_score += 5
-                            elif macd_hist < 0 and macd_hist < macd_hist_prev:
-                                sell_score += 5
+                    if not pd.isna(macd_hist) and not pd.isna(macd_hist_prev):
+                        if macd_hist > 0 and macd_hist > macd_hist_prev:
+                            buy_score += 5
+                        elif macd_hist < 0 and macd_hist < macd_hist_prev:
+                            sell_score += 5
+                
+                # Enhanced MACD with second signal line
+                if 'MACD_Signal_2' in recent_data.columns:
+                    macd_signal_2 = recent_data['MACD_Signal_2'].iloc[-1]
+                    if not pd.isna(macd_signal_2):
+                        if macd > macd_signal_2:
+                            buy_score += 5
+                        else:
+                            sell_score += 5
             
             # 3. Bollinger Bands Analysis (Weight: 15%)
             if all(col in recent_data.columns for col in ['BB_Upper', 'BB_Lower']):
@@ -3824,11 +3963,197 @@ def generate_live_trading_signals(data, timeframe):
                     elif sell_score > buy_score:
                         sell_score += 5
             
-            # 10. Volume Confirmation (Weight: 5%)
+            # 10. Volume Confirmation (Weight: 10%) - Enhanced with multiple volume indicators
             if 'Volume_Ratio' in recent_data.columns and not pd.isna(recent_data['Volume_Ratio'].iloc[-1]):
                 volume_ratio = recent_data['Volume_Ratio'].iloc[-1]
                 
                 if volume_ratio > 1.5:  # High volume
+                    if buy_score > sell_score:
+                        buy_score += 5
+                    elif sell_score > buy_score:
+                        sell_score += 5
+            
+            # Money Flow Index (MFI)
+            if 'MFI' in recent_data.columns and not pd.isna(recent_data['MFI'].iloc[-1]):
+                mfi = recent_data['MFI'].iloc[-1]
+                if mfi < 20:
+                    buy_score += 8
+                elif mfi > 80:
+                    sell_score += 8
+            
+            # Chaikin Money Flow (CMF)
+            if 'CMF' in recent_data.columns and not pd.isna(recent_data['CMF'].iloc[-1]):
+                cmf = recent_data['CMF'].iloc[-1]
+                if cmf > 0.25:
+                    buy_score += 5
+                elif cmf < -0.25:
+                    sell_score += 5
+            
+            # 11. Advanced Moving Average Analysis (Weight: 15%)
+            # Hull Moving Average signals
+            if 'HMA_20' in recent_data.columns and not pd.isna(recent_data['HMA_20'].iloc[-1]):
+                hma_20 = recent_data['HMA_20'].iloc[-1]
+                hma_20_prev = recent_data['HMA_20'].iloc[-2] if len(recent_data) > 1 and not pd.isna(recent_data['HMA_20'].iloc[-2]) else hma_20
+                
+                if current_price > hma_20 and current_price > hma_20_prev:
+                    buy_score += 8
+                elif current_price < hma_20 and current_price < hma_20_prev:
+                    sell_score += 8
+            
+            # Moving Average Crossovers
+            if all(col in recent_data.columns for col in ['SMA_20', 'SMA_50', 'EMA_20', 'EMA_50']):
+                sma_20 = recent_data['SMA_20'].iloc[-1]
+                sma_50 = recent_data['SMA_50'].iloc[-1]
+                ema_20 = recent_data['EMA_20'].iloc[-1]
+                ema_50 = recent_data['EMA_50'].iloc[-1]
+                
+                # Golden Cross (SMA 20 crosses above SMA 50)
+                if sma_20 > sma_50 and len(recent_data) > 1:
+                    sma_20_prev = recent_data['SMA_20'].iloc[-2] if not pd.isna(recent_data['SMA_20'].iloc[-2]) else sma_20
+                    sma_50_prev = recent_data['SMA_50'].iloc[-2] if not pd.isna(recent_data['SMA_50'].iloc[-2]) else sma_50
+                    if sma_20_prev <= sma_50_prev:
+                        buy_score += 10
+                
+                # Death Cross (SMA 20 crosses below SMA 50)
+                elif sma_20 < sma_50 and len(recent_data) > 1:
+                    sma_20_prev = recent_data['SMA_20'].iloc[-2] if not pd.isna(recent_data['SMA_20'].iloc[-2]) else sma_20
+                    sma_50_prev = recent_data['SMA_50'].iloc[-2] if not pd.isna(recent_data['SMA_50'].iloc[-2]) else sma_50
+                    if sma_20_prev >= sma_50_prev:
+                        sell_score += 10
+            
+            # 12. Ichimoku Cloud Analysis (Weight: 10%)
+            if all(col in recent_data.columns for col in ['Tenkan_Sen', 'Kijun_Sen', 'Senkou_Span_A', 'Senkou_Span_B']):
+                tenkan = recent_data['Tenkan_Sen'].iloc[-1]
+                kijun = recent_data['Kijun_Sen'].iloc[-1]
+                span_a = recent_data['Senkou_Span_A'].iloc[-1]
+                span_b = recent_data['Senkou_Span_B'].iloc[-1]
+                
+                if not pd.isna(tenkan) and not pd.isna(kijun) and not pd.isna(span_a) and not pd.isna(span_b):
+                    # Tenkan crosses above Kijun (bullish)
+                    if tenkan > kijun and len(recent_data) > 1:
+                        tenkan_prev = recent_data['Tenkan_Sen'].iloc[-2] if not pd.isna(recent_data['Tenkan_Sen'].iloc[-2]) else tenkan
+                        kijun_prev = recent_data['Kijun_Sen'].iloc[-2] if not pd.isna(recent_data['Kijun_Sen'].iloc[-2]) else kijun
+                        if tenkan_prev <= kijun_prev:
+                            buy_score += 8
+                    
+                    # Tenkan crosses below Kijun (bearish)
+                    elif tenkan < kijun and len(recent_data) > 1:
+                        tenkan_prev = recent_data['Tenkan_Sen'].iloc[-2] if not pd.isna(recent_data['Tenkan_Sen'].iloc[-2]) else tenkan
+                        kijun_prev = recent_data['Kijun_Sen'].iloc[-2] if not pd.isna(recent_data['Kijun_Sen'].iloc[-2]) else kijun
+                        if tenkan_prev >= kijun_prev:
+                            sell_score += 8
+                    
+                    # Price above cloud (bullish)
+                    if current_price > span_a and current_price > span_b:
+                        buy_score += 5
+                    # Price below cloud (bearish)
+                    elif current_price < span_a and current_price < span_b:
+                        sell_score += 5
+            
+            # 13. Fibonacci Retracement Analysis (Weight: 8%)
+            if all(col in recent_data.columns for col in ['Fib_23_6', 'Fib_38_2', 'Fib_50_0', 'Fib_61_8']):
+                fib_236 = recent_data['Fib_23_6'].iloc[-1]
+                fib_382 = recent_data['Fib_38_2'].iloc[-1]
+                fib_500 = recent_data['Fib_50_0'].iloc[-1]
+                fib_618 = recent_data['Fib_61_8'].iloc[-1]
+                
+                if not pd.isna(fib_236) and not pd.isna(fib_382) and not pd.isna(fib_500) and not pd.isna(fib_618):
+                    # Price near Fibonacci support levels
+                    if abs(current_price - fib_236) / current_price < 0.02:  # Within 2%
+                        buy_score += 6
+                    elif abs(current_price - fib_382) / current_price < 0.02:
+                        buy_score += 4
+                    elif abs(current_price - fib_500) / current_price < 0.02:
+                        buy_score += 3
+                    
+                    # Price near Fibonacci resistance levels
+                    elif abs(current_price - fib_618) / current_price < 0.02:
+                        sell_score += 4
+            
+            # 14. Pivot Point Analysis (Weight: 5%)
+            if all(col in recent_data.columns for col in ['Pivot', 'R1', 'S1']):
+                pivot = recent_data['Pivot'].iloc[-1]
+                r1 = recent_data['R1'].iloc[-1]
+                s1 = recent_data['S1'].iloc[-1]
+                
+                if not pd.isna(pivot) and not pd.isna(r1) and not pd.isna(s1):
+                    # Price near support
+                    if abs(current_price - s1) / current_price < 0.01:  # Within 1%
+                        buy_score += 5
+                    # Price near resistance
+                    elif abs(current_price - r1) / current_price < 0.01:
+                        sell_score += 5
+            
+            # 15. Volatility Analysis (Weight: 7%)
+            if 'Volatility_Ratio' in recent_data.columns and not pd.isna(recent_data['Volatility_Ratio'].iloc[-1]):
+                vol_ratio = recent_data['Volatility_Ratio'].iloc[-1]
+                
+                # High volatility can indicate trend continuation or reversal
+                if vol_ratio > 1.5:  # High volatility
+                    if buy_score > sell_score:
+                        buy_score += 4
+                    elif sell_score > buy_score:
+                        sell_score += 4
+            
+            # 16. Rate of Change (ROC) Analysis (Weight: 8%)
+            for roc_period in ['ROC_10', 'ROC_20', 'ROC_50']:
+                if roc_period in recent_data.columns and not pd.isna(recent_data[roc_period].iloc[-1]):
+                    roc = recent_data[roc_period].iloc[-1]
+                    roc_prev = recent_data[roc_period].iloc[-2] if len(recent_data) > 1 and not pd.isna(recent_data[roc_period].iloc[-2]) else roc
+                    
+                    # Weight based on period (shorter = more weight)
+                    weight = 8 if roc_period == 'ROC_10' else (5 if roc_period == 'ROC_20' else 3)
+                    
+                    # Positive momentum
+                    if roc > 0 and roc > roc_prev:
+                        buy_score += weight
+                    # Negative momentum
+                    elif roc < 0 and roc < roc_prev:
+                        sell_score += weight
+            
+            # 17. Enhanced Stochastic Analysis (Weight: 8%)
+            for stoch_period in ['Stoch_K', 'Stoch_K_21']:
+                if stoch_period in recent_data.columns and not pd.isna(recent_data[stoch_period].iloc[-1]):
+                    stoch_k = recent_data[stoch_period].iloc[-1]
+                    stoch_d_col = f'Stoch_D{stoch_period[8:]}' if len(stoch_period) > 8 else 'Stoch_D'
+                    stoch_d = recent_data[stoch_d_col].iloc[-1] if stoch_d_col in recent_data.columns and not pd.isna(recent_data[stoch_d_col].iloc[-1]) else None
+                    
+                    weight = 8 if stoch_period == 'Stoch_K' else 4
+                    
+                    # Oversold crossover
+                    if stoch_k < 20 and stoch_d is not None and stoch_k > stoch_d:
+                        buy_score += weight
+                    # Overbought crossover
+                    elif stoch_k > 80 and stoch_d is not None and stoch_k < stoch_d:
+                        sell_score += weight
+            
+            # 18. Enhanced Williams %R Analysis (Weight: 6%)
+            for williams_period in ['Williams_R', 'Williams_R_21']:
+                if williams_period in recent_data.columns and not pd.isna(recent_data[williams_period].iloc[-1]):
+                    williams_r = recent_data[williams_period].iloc[-1]
+                    weight = 6 if williams_period == 'Williams_R' else 3
+                    
+                    if williams_r < -80:
+                        buy_score += weight
+                    elif williams_r > -20:
+                        sell_score += weight
+            
+            # 19. Enhanced CCI Analysis (Weight: 6%)
+            for cci_period in ['CCI', 'CCI_40']:
+                if cci_period in recent_data.columns and not pd.isna(recent_data[cci_period].iloc[-1]):
+                    cci = recent_data[cci_period].iloc[-1]
+                    weight = 6 if cci_period == 'CCI' else 3
+                    
+                    if cci < -100:
+                        buy_score += weight
+                    elif cci > 100:
+                        sell_score += weight
+            
+            # 20. Trend Strength Confirmation (Weight: 5%)
+            if 'Trend_Strength' in recent_data.columns and not pd.isna(recent_data['Trend_Strength'].iloc[-1]):
+                trend_strength = recent_data['Trend_Strength'].iloc[-1]
+                
+                if trend_strength > 2.0:  # Strong trend
                     if buy_score > sell_score:
                         buy_score += 5
                     elif sell_score > buy_score:
@@ -3847,30 +4172,31 @@ def generate_live_trading_signals(data, timeframe):
                     elif current_price < recent_lows.iloc[-2]:
                         sell_score += 10
             
-            # Determine final signal based on scoring (reduced thresholds for more signals)
-            if buy_score > sell_score and buy_score >= 20:  # Reduced minimum threshold
+            # Determine final signal based on enhanced scoring system
+            max_possible_score = 300  # Increased due to more indicators
+            if buy_score > sell_score and buy_score >= 40:  # Higher minimum threshold due to more indicators
                 signal_type = "buy"
-                if buy_score >= 50:
+                if buy_score >= 120:
                     signal_strength = "strong"
-                    confidence = min(0.9, buy_score / 100)
-                elif buy_score >= 30:
+                    confidence = min(0.95, buy_score / max_possible_score)
+                elif buy_score >= 80:
                     signal_strength = "moderate"
-                    confidence = min(0.7, buy_score / 100)
+                    confidence = min(0.8, buy_score / max_possible_score)
                 else:
                     signal_strength = "weak"
-                    confidence = min(0.5, buy_score / 100)
+                    confidence = min(0.6, buy_score / max_possible_score)
             
-            elif sell_score > buy_score and sell_score >= 20:  # Reduced minimum threshold
+            elif sell_score > buy_score and sell_score >= 40:  # Higher minimum threshold due to more indicators
                 signal_type = "sell"
-                if sell_score >= 50:
+                if sell_score >= 120:
                     signal_strength = "strong"
-                    confidence = min(0.9, sell_score / 100)
-                elif sell_score >= 30:
+                    confidence = min(0.95, sell_score / max_possible_score)
+                elif sell_score >= 80:
                     signal_strength = "moderate"
-                    confidence = min(0.7, sell_score / 100)
+                    confidence = min(0.8, sell_score / max_possible_score)
                 else:
                     signal_strength = "weak"
-                    confidence = min(0.5, sell_score / 100)
+                    confidence = min(0.6, sell_score / max_possible_score)
             
             # Only add signals with sufficient confidence and avoid signal clustering
             if signal_type != "hold" and confidence >= 0.4:  # Reduced confidence threshold
