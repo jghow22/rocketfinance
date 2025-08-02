@@ -3646,24 +3646,37 @@ def generate_live_trading_signals(data, timeframe):
     Based on the TradingView Ultimate Buy and Sell Indicator approach.
     """
     try:
-        if data is None or len(data) < 50:
+        if data is None or len(data) < 30:  # Reduced minimum requirement
+            print(f"Signal generation: Insufficient data. Length: {len(data) if data is not None else 0}")
             return []
+        
+        print(f"Signal generation: Processing {len(data)} data points for {timeframe}")
         
         # Calculate comprehensive technical indicators
         data_with_indicators = calculate_technical_indicators(data)
         
-        signals = []
-        signal_lookback = min(100, len(data_with_indicators) - 1)
+        # Validate that indicators were calculated successfully
+        required_indicators = ['RSI', 'MACD', 'MACD_Signal', 'BB_Upper', 'BB_Lower', 'SMA_20', 'SMA_50']
+        missing_indicators = [ind for ind in required_indicators if ind not in data_with_indicators.columns]
+        if missing_indicators:
+            print(f"Signal generation: Missing indicators: {missing_indicators}")
+            return []
         
-        # Track watch signals (Bollinger Band crossovers and momentum shifts)
-        watch_signals = []
+        signals = []
+        signal_lookback = min(50, len(data_with_indicators) - 1)  # Reduced lookback
+        
+        print(f"Signal generation: Analyzing {len(data_with_indicators) - signal_lookback} recent bars")
         
         for i in range(signal_lookback, len(data_with_indicators)):
             current_price = data_with_indicators['Close'].iloc[i]
             current_date = data_with_indicators.index[i]
             
-            # Get recent data for analysis (last 30 bars for better context)
-            recent_data = data_with_indicators.iloc[max(0, i-30):i+1]
+            # Validate current price
+            if pd.isna(current_price) or current_price <= 0:
+                continue
+            
+            # Get recent data for analysis (last 20 bars for better context)
+            recent_data = data_with_indicators.iloc[max(0, i-20):i+1]
             
             # Initialize signal scoring system
             buy_score = 0
@@ -3675,7 +3688,7 @@ def generate_live_trading_signals(data, timeframe):
             # 1. RSI Analysis (Weight: 20%)
             if 'RSI' in recent_data.columns and not pd.isna(recent_data['RSI'].iloc[-1]):
                 rsi = recent_data['RSI'].iloc[-1]
-                rsi_prev = recent_data['RSI'].iloc[-2] if len(recent_data) > 1 else rsi
+                rsi_prev = recent_data['RSI'].iloc[-2] if len(recent_data) > 1 and not pd.isna(recent_data['RSI'].iloc[-2]) else rsi
                 
                 # Oversold conditions
                 if rsi < 30:
@@ -3697,101 +3710,80 @@ def generate_live_trading_signals(data, timeframe):
             if 'MACD' in recent_data.columns and 'MACD_Signal' in recent_data.columns:
                 macd = recent_data['MACD'].iloc[-1]
                 macd_signal = recent_data['MACD_Signal'].iloc[-1]
-                macd_prev = recent_data['MACD'].iloc[-2] if len(recent_data) > 1 else macd
-                macd_signal_prev = recent_data['MACD_Signal'].iloc[-2] if len(recent_data) > 1 else macd_signal
                 
-                # MACD crossover signals
-                if macd > macd_signal and macd_prev <= macd_signal_prev:
-                    buy_score += 15
-                elif macd < macd_signal and macd_prev >= macd_signal_prev:
-                    sell_score += 15
-                
-                # MACD histogram momentum
-                if 'MACD_Hist' in recent_data.columns:
-                    macd_hist = recent_data['MACD_Hist'].iloc[-1]
-                    macd_hist_prev = recent_data['MACD_Hist'].iloc[-2] if len(recent_data) > 1 else macd_hist
+                if not pd.isna(macd) and not pd.isna(macd_signal) and len(recent_data) > 1:
+                    macd_prev = recent_data['MACD'].iloc[-2] if not pd.isna(recent_data['MACD'].iloc[-2]) else macd
+                    macd_signal_prev = recent_data['MACD_Signal'].iloc[-2] if not pd.isna(recent_data['MACD_Signal'].iloc[-2]) else macd_signal
                     
-                    if macd_hist > 0 and macd_hist > macd_hist_prev:
-                        buy_score += 5
-                    elif macd_hist < 0 and macd_hist < macd_hist_prev:
-                        sell_score += 5
+                    # MACD crossover signals
+                    if macd > macd_signal and macd_prev <= macd_signal_prev:
+                        buy_score += 15
+                    elif macd < macd_signal and macd_prev >= macd_signal_prev:
+                        sell_score += 15
+                    
+                    # MACD histogram momentum
+                    if 'MACD_Hist' in recent_data.columns:
+                        macd_hist = recent_data['MACD_Hist'].iloc[-1]
+                        macd_hist_prev = recent_data['MACD_Hist'].iloc[-2] if len(recent_data) > 1 and not pd.isna(recent_data['MACD_Hist'].iloc[-2]) else macd_hist
+                        
+                        if not pd.isna(macd_hist) and not pd.isna(macd_hist_prev):
+                            if macd_hist > 0 and macd_hist > macd_hist_prev:
+                                buy_score += 5
+                            elif macd_hist < 0 and macd_hist < macd_hist_prev:
+                                sell_score += 5
             
             # 3. Bollinger Bands Analysis (Weight: 15%)
-            if all(col in recent_data.columns for col in ['BB_Upper', 'BB_Lower', 'BB_Width']):
+            if all(col in recent_data.columns for col in ['BB_Upper', 'BB_Lower']):
                 bb_upper = recent_data['BB_Upper'].iloc[-1]
                 bb_lower = recent_data['BB_Lower'].iloc[-1]
-                bb_width = recent_data['BB_Width'].iloc[-1]
                 
-                # Price at Bollinger Band extremes
-                if current_price <= bb_lower:
-                    buy_score += 15
-                    if bb_width > 5:  # High volatility - stronger signal
-                        buy_score += 5
-                elif current_price >= bb_upper:
-                    sell_score += 15
-                    if bb_width > 5:  # High volatility - stronger signal
-                        sell_score += 5
-                
-                # Bollinger Band squeeze (low volatility before breakout)
-                if bb_width < 2 and len(recent_data) >= 5:
-                    bb_width_avg = recent_data['BB_Width'].iloc[-5:].mean()
-                    if bb_width < bb_width_avg * 0.5:
-                        # Potential breakout coming
-                        if current_price > recent_data['BB_Middle'].iloc[-1]:
-                            buy_score += 10
-                        else:
-                            sell_score += 10
+                if not pd.isna(bb_upper) and not pd.isna(bb_lower):
+                    # Price at Bollinger Band extremes
+                    if current_price <= bb_lower:
+                        buy_score += 15
+                        if 'BB_Width' in recent_data.columns and not pd.isna(recent_data['BB_Width'].iloc[-1]):
+                            bb_width = recent_data['BB_Width'].iloc[-1]
+                            if bb_width > 5:  # High volatility - stronger signal
+                                buy_score += 5
+                    elif current_price >= bb_upper:
+                        sell_score += 15
+                        if 'BB_Width' in recent_data.columns and not pd.isna(recent_data['BB_Width'].iloc[-1]):
+                            bb_width = recent_data['BB_Width'].iloc[-1]
+                            if bb_width > 5:  # High volatility - stronger signal
+                                sell_score += 5
             
             # 4. Moving Average Analysis (Weight: 15%)
-            if all(col in recent_data.columns for col in ['SMA_20', 'SMA_50', 'EMA_12', 'EMA_26']):
+            if all(col in recent_data.columns for col in ['SMA_20', 'SMA_50']):
                 sma_20 = recent_data['SMA_20'].iloc[-1]
                 sma_50 = recent_data['SMA_50'].iloc[-1]
-                ema_12 = recent_data['EMA_12'].iloc[-1]
-                ema_26 = recent_data['EMA_26'].iloc[-1]
                 
-                # Golden Cross (SMA 20 crosses above SMA 50)
-                if sma_20 > sma_50 and len(recent_data) > 1:
-                    sma_20_prev = recent_data['SMA_20'].iloc[-2]
-                    sma_50_prev = recent_data['SMA_50'].iloc[-2]
-                    if sma_20_prev <= sma_50_prev:
+                if not pd.isna(sma_20) and not pd.isna(sma_50) and len(recent_data) > 1:
+                    sma_20_prev = recent_data['SMA_20'].iloc[-2] if not pd.isna(recent_data['SMA_20'].iloc[-2]) else sma_20
+                    sma_50_prev = recent_data['SMA_50'].iloc[-2] if not pd.isna(recent_data['SMA_50'].iloc[-2]) else sma_50
+                    
+                    # Golden Cross (SMA 20 crosses above SMA 50)
+                    if sma_20 > sma_50 and sma_20_prev <= sma_50_prev:
                         buy_score += 20  # Strong trend signal
-                
-                # Death Cross (SMA 20 crosses below SMA 50)
-                elif sma_20 < sma_50 and len(recent_data) > 1:
-                    sma_20_prev = recent_data['SMA_20'].iloc[-2]
-                    sma_50_prev = recent_data['SMA_50'].iloc[-2]
-                    if sma_20_prev >= sma_50_prev:
+                    
+                    # Death Cross (SMA 20 crosses below SMA 50)
+                    elif sma_20 < sma_50 and sma_20_prev >= sma_50_prev:
                         sell_score += 20  # Strong trend signal
-                
-                # EMA crossover
-                if ema_12 > ema_26 and len(recent_data) > 1:
-                    ema_12_prev = recent_data['EMA_12'].iloc[-2]
-                    ema_26_prev = recent_data['EMA_26'].iloc[-2]
-                    if ema_12_prev <= ema_26_prev:
-                        buy_score += 10
-                elif ema_12 < ema_26 and len(recent_data) > 1:
-                    ema_12_prev = recent_data['EMA_12'].iloc[-2]
-                    ema_26_prev = recent_data['EMA_26'].iloc[-2]
-                    if ema_12_prev >= ema_26_prev:
-                        sell_score += 10
             
             # 5. Stochastic Oscillator (Weight: 10%)
             if all(col in recent_data.columns for col in ['Stoch_K', 'Stoch_D']):
                 stoch_k = recent_data['Stoch_K'].iloc[-1]
                 stoch_d = recent_data['Stoch_D'].iloc[-1]
                 
-                # Oversold crossover
-                if stoch_k < 20 and stoch_k > stoch_d and len(recent_data) > 1:
-                    stoch_k_prev = recent_data['Stoch_K'].iloc[-2]
-                    stoch_d_prev = recent_data['Stoch_D'].iloc[-2]
-                    if stoch_k_prev <= stoch_d_prev:
+                if not pd.isna(stoch_k) and not pd.isna(stoch_d) and len(recent_data) > 1:
+                    stoch_k_prev = recent_data['Stoch_K'].iloc[-2] if not pd.isna(recent_data['Stoch_K'].iloc[-2]) else stoch_k
+                    stoch_d_prev = recent_data['Stoch_D'].iloc[-2] if not pd.isna(recent_data['Stoch_D'].iloc[-2]) else stoch_d
+                    
+                    # Oversold crossover
+                    if stoch_k < 20 and stoch_k > stoch_d and stoch_k_prev <= stoch_d_prev:
                         buy_score += 10
-                
-                # Overbought crossover
-                elif stoch_k > 80 and stoch_k < stoch_d and len(recent_data) > 1:
-                    stoch_k_prev = recent_data['Stoch_K'].iloc[-2]
-                    stoch_d_prev = recent_data['Stoch_D'].iloc[-2]
-                    if stoch_k_prev >= stoch_d_prev:
+                    
+                    # Overbought crossover
+                    elif stoch_k > 80 and stoch_k < stoch_d and stoch_k_prev >= stoch_d_prev:
                         sell_score += 10
             
             # 6. Williams %R (Weight: 10%)
@@ -3843,36 +3835,37 @@ def generate_live_trading_signals(data, timeframe):
                         sell_score += 5
             
             # 11. Price Action and Support/Resistance (Weight: 10%)
-            if len(recent_data) >= 10:
+            if len(recent_data) >= 10 and 'High' in recent_data.columns and 'Low' in recent_data.columns:
                 recent_highs = recent_data['High'].rolling(window=10).max()
                 recent_lows = recent_data['Low'].rolling(window=10).min()
                 
-                # Breakout above recent highs
-                if current_price > recent_highs.iloc[-2]:
-                    buy_score += 10
-                # Breakdown below recent lows
-                elif current_price < recent_lows.iloc[-2]:
-                    sell_score += 10
+                if len(recent_data) > 1:
+                    # Breakout above recent highs
+                    if current_price > recent_highs.iloc[-2]:
+                        buy_score += 10
+                    # Breakdown below recent lows
+                    elif current_price < recent_lows.iloc[-2]:
+                        sell_score += 10
             
-            # Determine final signal based on scoring
-            if buy_score > sell_score and buy_score >= 30:  # Minimum threshold
+            # Determine final signal based on scoring (reduced thresholds for more signals)
+            if buy_score > sell_score and buy_score >= 20:  # Reduced minimum threshold
                 signal_type = "buy"
-                if buy_score >= 60:
+                if buy_score >= 50:
                     signal_strength = "strong"
                     confidence = min(0.9, buy_score / 100)
-                elif buy_score >= 40:
+                elif buy_score >= 30:
                     signal_strength = "moderate"
                     confidence = min(0.7, buy_score / 100)
                 else:
                     signal_strength = "weak"
                     confidence = min(0.5, buy_score / 100)
             
-            elif sell_score > buy_score and sell_score >= 30:  # Minimum threshold
+            elif sell_score > buy_score and sell_score >= 20:  # Reduced minimum threshold
                 signal_type = "sell"
-                if sell_score >= 60:
+                if sell_score >= 50:
                     signal_strength = "strong"
                     confidence = min(0.9, sell_score / 100)
-                elif sell_score >= 40:
+                elif sell_score >= 30:
                     signal_strength = "moderate"
                     confidence = min(0.7, sell_score / 100)
                 else:
@@ -3880,9 +3873,9 @@ def generate_live_trading_signals(data, timeframe):
                     confidence = min(0.5, sell_score / 100)
             
             # Only add signals with sufficient confidence and avoid signal clustering
-            if signal_type != "hold" and confidence >= 0.5:
+            if signal_type != "hold" and confidence >= 0.4:  # Reduced confidence threshold
                 # Check if we already have a recent signal of the same type
-                recent_same_signals = [s for s in signals[-5:] if s['type'] == signal_type]
+                recent_same_signals = [s for s in signals[-3:] if s['type'] == signal_type]  # Reduced clustering check
                 if len(recent_same_signals) < 2:  # Limit consecutive signals
                     signal_data = {
                         "date": current_date.strftime("%Y-%m-%dT%H:%M:%SZ"),
@@ -3893,23 +3886,27 @@ def generate_live_trading_signals(data, timeframe):
                         "score": max(buy_score, sell_score),
                         "indicators": {
                             "rsi": float(recent_data['RSI'].iloc[-1]) if 'RSI' in recent_data.columns and not pd.isna(recent_data['RSI'].iloc[-1]) else None,
-                            "macd": float(recent_data['MACD'].iloc[-1]) if 'MACD' in recent_data.columns else None,
-                            "stoch_k": float(recent_data['Stoch_K'].iloc[-1]) if 'Stoch_K' in recent_data.columns else None,
-                            "williams_r": float(recent_data['Williams_R'].iloc[-1]) if 'Williams_R' in recent_data.columns else None,
-                            "cci": float(recent_data['CCI'].iloc[-1]) if 'CCI' in recent_data.columns else None,
-                            "adx": float(recent_data['ADX'].iloc[-1]) if 'ADX' in recent_data.columns else None,
-                            "sma_20": float(recent_data['SMA_20'].iloc[-1]) if 'SMA_20' in recent_data.columns else None,
-                            "sma_50": float(recent_data['SMA_50'].iloc[-1]) if 'SMA_50' in recent_data.columns else None,
-                            "bb_width": float(recent_data['BB_Width'].iloc[-1]) if 'BB_Width' in recent_data.columns else None,
-                            "volume_ratio": float(recent_data['Volume_Ratio'].iloc[-1]) if 'Volume_Ratio' in recent_data.columns else None
+                            "macd": float(recent_data['MACD'].iloc[-1]) if 'MACD' in recent_data.columns and not pd.isna(recent_data['MACD'].iloc[-1]) else None,
+                            "stoch_k": float(recent_data['Stoch_K'].iloc[-1]) if 'Stoch_K' in recent_data.columns and not pd.isna(recent_data['Stoch_K'].iloc[-1]) else None,
+                            "williams_r": float(recent_data['Williams_R'].iloc[-1]) if 'Williams_R' in recent_data.columns and not pd.isna(recent_data['Williams_R'].iloc[-1]) else None,
+                            "cci": float(recent_data['CCI'].iloc[-1]) if 'CCI' in recent_data.columns and not pd.isna(recent_data['CCI'].iloc[-1]) else None,
+                            "adx": float(recent_data['ADX'].iloc[-1]) if 'ADX' in recent_data.columns and not pd.isna(recent_data['ADX'].iloc[-1]) else None,
+                            "sma_20": float(recent_data['SMA_20'].iloc[-1]) if 'SMA_20' in recent_data.columns and not pd.isna(recent_data['SMA_20'].iloc[-1]) else None,
+                            "sma_50": float(recent_data['SMA_50'].iloc[-1]) if 'SMA_50' in recent_data.columns and not pd.isna(recent_data['SMA_50'].iloc[-1]) else None,
+                            "bb_width": float(recent_data['BB_Width'].iloc[-1]) if 'BB_Width' in recent_data.columns and not pd.isna(recent_data['BB_Width'].iloc[-1]) else None,
+                            "volume_ratio": float(recent_data['Volume_Ratio'].iloc[-1]) if 'Volume_Ratio' in recent_data.columns and not pd.isna(recent_data['Volume_Ratio'].iloc[-1]) else None
                         }
                     }
                     signals.append(signal_data)
+                    print(f"Signal generated: {signal_type.upper()} {signal_strength} (score: {max(buy_score, sell_score)}, confidence: {confidence:.2f})")
         
-        # Limit to recent signals (last 15 for cleaner display)
-        recent_signals = signals[-15:] if len(signals) > 15 else signals
+        # Limit to recent signals (last 10 for cleaner display)
+        recent_signals = signals[-10:] if len(signals) > 10 else signals
         
         print(f"Generated {len(recent_signals)} enhanced live trading signals for {timeframe}")
+        if len(recent_signals) > 0:
+            print(f"Sample signal: {recent_signals[0]}")
+        
         return recent_signals
         
     except Exception as e:
@@ -4377,7 +4374,11 @@ def get_chart_data(data, forecast, timeframe):
         forecast_ohlc = generate_forecast_ohlc(filtered_data, forecast)
         
         # Generate live trading signals
+        print(f"Generating live signals for {symbol} with {len(filtered_data)} data points")
         live_signals = generate_live_trading_signals(filtered_data, timeframe)
+        print(f"Generated {len(live_signals)} live signals")
+        if len(live_signals) > 0:
+            print(f"First signal: {live_signals[0]}")
         
         # Determine if this is intraday data
         is_intraday = timeframe.endswith('min') or timeframe.endswith('h')
