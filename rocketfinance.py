@@ -1633,23 +1633,35 @@ def calculate_technical_indicators(data):
         
         # Weighted Moving Average (WMA)
         for period in [10, 20, 50]:
-            weights = np.arange(1, min(period, len(df)) + 1)
-            df[f'WMA_{period}'] = df['Close'].rolling(window=min(period, len(df))).apply(
-                lambda x: np.dot(x, weights[:len(x)]) / weights[:len(x)].sum(), raw=True
-            )
+            try:
+                weights = np.arange(1, min(period, len(df)) + 1)
+                df[f'WMA_{period}'] = df['Close'].rolling(window=min(period, len(df))).apply(
+                    lambda x: np.dot(x, weights[:len(x)]) / weights[:len(x)].sum(), raw=True
+                )
+                # Replace any NaN values with the previous valid value
+                df[f'WMA_{period}'] = df[f'WMA_{period}'].fillna(method='ffill').fillna(method='bfill')
+            except Exception as e:
+                print(f"Error calculating WMA_{period}: {e}")
+                df[f'WMA_{period}'] = df['Close']  # Fallback to close price
         
         # Hull Moving Average (HMA) - Smoother and more responsive
         for period in [10, 20, 50]:
-            wma_half = df['Close'].rolling(window=min(period//2, len(df))).apply(
-                lambda x: np.dot(x, np.arange(1, len(x)+1)) / np.arange(1, len(x)+1).sum(), raw=True
-            )
-            wma_full = df['Close'].rolling(window=min(period, len(df))).apply(
-                lambda x: np.dot(x, np.arange(1, len(x)+1)) / np.arange(1, len(x)+1).sum(), raw=True
-            )
-            raw_hma = 2 * wma_half - wma_full
-            df[f'HMA_{period}'] = raw_hma.rolling(window=min(int(np.sqrt(period)), len(df))).apply(
-                lambda x: np.dot(x, np.arange(1, len(x)+1)) / np.arange(1, len(x)+1).sum(), raw=True
-            )
+            try:
+                wma_half = df['Close'].rolling(window=min(period//2, len(df))).apply(
+                    lambda x: np.dot(x, np.arange(1, len(x)+1)) / np.arange(1, len(x)+1).sum(), raw=True
+                )
+                wma_full = df['Close'].rolling(window=min(period, len(df))).apply(
+                    lambda x: np.dot(x, np.arange(1, len(x)+1)) / np.arange(1, len(x)+1).sum(), raw=True
+                )
+                raw_hma = 2 * wma_half - wma_full
+                df[f'HMA_{period}'] = raw_hma.rolling(window=min(int(np.sqrt(period)), len(df))).apply(
+                    lambda x: np.dot(x, np.arange(1, len(x)+1)) / np.arange(1, len(x)+1).sum(), raw=True
+                )
+                # Replace any NaN values with the previous valid value
+                df[f'HMA_{period}'] = df[f'HMA_{period}'].fillna(method='ffill').fillna(method='bfill')
+            except Exception as e:
+                print(f"Error calculating HMA_{period}: {e}")
+                df[f'HMA_{period}'] = df['Close']  # Fallback to close price
         
         # MACD - Enhanced with multiple signal lines
         df['MACD'] = df['EMA_12'] - df['EMA_26']
@@ -1739,18 +1751,30 @@ def calculate_technical_indicators(data):
             df['VPT'] = (df['Volume'] * ((df['Close'] - df['Close'].shift(1)) / df['Close'].shift(1))).cumsum()
             
             # Money Flow Index (MFI)
-            typical_price = (df['High'] + df['Low'] + df['Close']) / 3
-            money_flow = typical_price * df['Volume']
-            positive_flow = money_flow.where(typical_price > typical_price.shift(1), 0).rolling(window=min(14, len(df))).sum()
-            negative_flow = money_flow.where(typical_price < typical_price.shift(1), 0).rolling(window=min(14, len(df))).sum()
-            mfi_ratio = positive_flow / negative_flow
-            df['MFI'] = 100 - (100 / (1 + mfi_ratio))
+            try:
+                typical_price = (df['High'] + df['Low'] + df['Close']) / 3
+                money_flow = typical_price * df['Volume']
+                positive_flow = money_flow.where(typical_price > typical_price.shift(1), 0).rolling(window=min(14, len(df))).sum()
+                negative_flow = money_flow.where(typical_price < typical_price.shift(1), 0).rolling(window=min(14, len(df))).sum()
+                mfi_ratio = positive_flow / negative_flow
+                df['MFI'] = 100 - (100 / (1 + mfi_ratio))
+                # Replace any NaN values
+                df['MFI'] = df['MFI'].fillna(50)  # Neutral value
+            except Exception as e:
+                print(f"Error calculating MFI: {e}")
+                df['MFI'] = 50  # Neutral fallback
             
             # Chaikin Money Flow (CMF)
-            mfm = ((df['Close'] - df['Low']) - (df['High'] - df['Close'])) / (df['High'] - df['Low'])
-            mfm = mfm.replace([np.inf, -np.inf], 0)
-            mfv = mfm * df['Volume']
-            df['CMF'] = mfv.rolling(window=min(20, len(df))).sum() / df['Volume'].rolling(window=min(20, len(df))).sum()
+            try:
+                mfm = ((df['Close'] - df['Low']) - (df['High'] - df['Close'])) / (df['High'] - df['Low'])
+                mfm = mfm.replace([np.inf, -np.inf], 0)
+                mfv = mfm * df['Volume']
+                df['CMF'] = mfv.rolling(window=min(20, len(df))).sum() / df['Volume'].rolling(window=min(20, len(df))).sum()
+                # Replace any NaN values
+                df['CMF'] = df['CMF'].fillna(0)  # Neutral value
+            except Exception as e:
+                print(f"Error calculating CMF: {e}")
+                df['CMF'] = 0  # Neutral fallback
             
         # Price Action Indicators - Enhanced
         df['Price_Change'] = df['Close'].pct_change() * 100
@@ -1782,28 +1806,54 @@ def calculate_technical_indicators(data):
         df['S2'] = df['Pivot'] - (df['High'] - df['Low'])
         
         # Ichimoku Cloud Components
-        high_9 = df['High'].rolling(window=min(9, len(df))).max()
-        low_9 = df['Low'].rolling(window=min(9, len(df))).min()
-        df['Tenkan_Sen'] = (high_9 + low_9) / 2
-        
-        high_26 = df['High'].rolling(window=min(26, len(df))).max()
-        low_26 = df['Low'].rolling(window=min(26, len(df))).min()
-        df['Kijun_Sen'] = (high_26 + low_26) / 2
-        
-        df['Senkou_Span_A'] = ((df['Tenkan_Sen'] + df['Kijun_Sen']) / 2).shift(26)
-        
-        high_52 = df['High'].rolling(window=min(52, len(df))).max()
-        low_52 = df['Low'].rolling(window=min(52, len(df))).min()
-        df['Senkou_Span_B'] = ((high_52 + low_52) / 2).shift(26)
+        try:
+            high_9 = df['High'].rolling(window=min(9, len(df))).max()
+            low_9 = df['Low'].rolling(window=min(9, len(df))).min()
+            df['Tenkan_Sen'] = (high_9 + low_9) / 2
+            
+            high_26 = df['High'].rolling(window=min(26, len(df))).max()
+            low_26 = df['Low'].rolling(window=min(26, len(df))).min()
+            df['Kijun_Sen'] = (high_26 + low_26) / 2
+            
+            df['Senkou_Span_A'] = ((df['Tenkan_Sen'] + df['Kijun_Sen']) / 2).shift(26)
+            
+            high_52 = df['High'].rolling(window=min(52, len(df))).max()
+            low_52 = df['Low'].rolling(window=min(52, len(df))).min()
+            df['Senkou_Span_B'] = ((high_52 + low_52) / 2).shift(26)
+            
+            # Replace any NaN values with close price
+            df['Tenkan_Sen'] = df['Tenkan_Sen'].fillna(df['Close'])
+            df['Kijun_Sen'] = df['Kijun_Sen'].fillna(df['Close'])
+            df['Senkou_Span_A'] = df['Senkou_Span_A'].fillna(df['Close'])
+            df['Senkou_Span_B'] = df['Senkou_Span_B'].fillna(df['Close'])
+        except Exception as e:
+            print(f"Error calculating Ichimoku components: {e}")
+            df['Tenkan_Sen'] = df['Close']
+            df['Kijun_Sen'] = df['Close']
+            df['Senkou_Span_A'] = df['Close']
+            df['Senkou_Span_B'] = df['Close']
         
         # Fibonacci Retracement Levels (based on recent swing high/low)
-        recent_high = df['High'].rolling(window=min(20, len(df))).max()
-        recent_low = df['Low'].rolling(window=min(20, len(df))).min()
-        diff = recent_high - recent_low
-        df['Fib_23_6'] = recent_high - (diff * 0.236)
-        df['Fib_38_2'] = recent_high - (diff * 0.382)
-        df['Fib_50_0'] = recent_high - (diff * 0.500)
-        df['Fib_61_8'] = recent_high - (diff * 0.618)
+        try:
+            recent_high = df['High'].rolling(window=min(20, len(df))).max()
+            recent_low = df['Low'].rolling(window=min(20, len(df))).min()
+            diff = recent_high - recent_low
+            df['Fib_23_6'] = recent_high - (diff * 0.236)
+            df['Fib_38_2'] = recent_high - (diff * 0.382)
+            df['Fib_50_0'] = recent_high - (diff * 0.500)
+            df['Fib_61_8'] = recent_high - (diff * 0.618)
+            
+            # Replace any NaN values with close price
+            df['Fib_23_6'] = df['Fib_23_6'].fillna(df['Close'])
+            df['Fib_38_2'] = df['Fib_38_2'].fillna(df['Close'])
+            df['Fib_50_0'] = df['Fib_50_0'].fillna(df['Close'])
+            df['Fib_61_8'] = df['Fib_61_8'].fillna(df['Close'])
+        except Exception as e:
+            print(f"Error calculating Fibonacci levels: {e}")
+            df['Fib_23_6'] = df['Close']
+            df['Fib_38_2'] = df['Close']
+            df['Fib_50_0'] = df['Close']
+            df['Fib_61_8'] = df['Close']
         
         # Trend Strength Indicators
         df['Trend_Strength'] = abs(df['SMA_20'] - df['SMA_50']) / df['SMA_50'] * 100
@@ -1812,6 +1862,25 @@ def calculate_technical_indicators(data):
         df['Price_vs_SMA20'] = (df['Close'] - df['SMA_20']) / df['SMA_20'] * 100
         df['Price_vs_SMA50'] = (df['Close'] - df['SMA_50']) / df['SMA_50'] * 100
         df['Price_vs_SMA200'] = (df['Close'] - df['SMA_200']) / df['SMA_200'] * 100
+        
+        # Final cleanup: Replace any remaining NaN values with appropriate defaults
+        numeric_columns = df.select_dtypes(include=[np.number]).columns
+        for col in numeric_columns:
+            if col in ['Close', 'Open', 'High', 'Low']:
+                # For price columns, use forward fill then backward fill
+                df[col] = df[col].fillna(method='ffill').fillna(method='bfill')
+            elif 'RSI' in col or 'Stoch' in col or 'Williams' in col or 'CCI' in col:
+                # For oscillator indicators, use neutral values
+                df[col] = df[col].fillna(50 if 'RSI' in col else 0)
+            elif 'MACD' in col or 'ROC' in col or 'Momentum' in col:
+                # For momentum indicators, use 0
+                df[col] = df[col].fillna(0)
+            elif 'BB_' in col or 'Fib_' in col or 'Pivot' in col or 'R' in col or 'S' in col:
+                # For price-based indicators, use close price
+                df[col] = df[col].fillna(df['Close'])
+            else:
+                # For other indicators, use forward fill then backward fill
+                df[col] = df[col].fillna(method='ffill').fillna(method='bfill')
         
         return df
         
@@ -4172,37 +4241,43 @@ def generate_live_trading_signals(data, timeframe):
                     elif current_price < recent_lows.iloc[-2]:
                         sell_score += 10
             
-            # Determine final signal based on enhanced scoring system
-            max_possible_score = 300  # Increased due to more indicators
-            if buy_score > sell_score and buy_score >= 40:  # Higher minimum threshold due to more indicators
-                signal_type = "buy"
-                if buy_score >= 120:
-                    signal_strength = "strong"
-                    confidence = min(0.95, buy_score / max_possible_score)
-                elif buy_score >= 80:
-                    signal_strength = "moderate"
-                    confidence = min(0.8, buy_score / max_possible_score)
-                else:
-                    signal_strength = "weak"
-                    confidence = min(0.6, buy_score / max_possible_score)
+            # Print detailed scoring breakdown for debugging
+            print(f"\n=== SIGNAL GENERATION DEBUG ===")
+            print(f"Current price: {current_price}")
+            print(f"Buy score: {buy_score}, Sell score: {sell_score}")
+            print(f"Max possible score: {max_possible_score}")
             
-            elif sell_score > buy_score and sell_score >= 40:  # Higher minimum threshold due to more indicators
-                signal_type = "sell"
-                if sell_score >= 120:
+            # Determine final signal based on enhanced scoring system (relaxed thresholds)
+            max_possible_score = 300  # Increased due to more indicators
+            if buy_score > sell_score and buy_score >= 25:  # Relaxed minimum threshold
+                signal_type = "buy"
+                if buy_score >= 80:
                     signal_strength = "strong"
-                    confidence = min(0.95, sell_score / max_possible_score)
-                elif sell_score >= 80:
+                    confidence = min(0.9, buy_score / max_possible_score)
+                elif buy_score >= 50:
                     signal_strength = "moderate"
-                    confidence = min(0.8, sell_score / max_possible_score)
+                    confidence = min(0.7, buy_score / max_possible_score)
                 else:
                     signal_strength = "weak"
-                    confidence = min(0.6, sell_score / max_possible_score)
+                    confidence = min(0.5, buy_score / max_possible_score)
+            
+            elif sell_score > buy_score and sell_score >= 25:  # Relaxed minimum threshold
+                signal_type = "sell"
+                if sell_score >= 80:
+                    signal_strength = "strong"
+                    confidence = min(0.9, sell_score / max_possible_score)
+                elif sell_score >= 50:
+                    signal_strength = "moderate"
+                    confidence = min(0.7, sell_score / max_possible_score)
+                else:
+                    signal_strength = "weak"
+                    confidence = min(0.5, sell_score / max_possible_score)
             
             # Only add signals with sufficient confidence and avoid signal clustering
-            if signal_type != "hold" and confidence >= 0.4:  # Reduced confidence threshold
+            if signal_type != "hold" and confidence >= 0.3:  # Further reduced confidence threshold
                 # Check if we already have a recent signal of the same type
-                recent_same_signals = [s for s in signals[-3:] if s['type'] == signal_type]  # Reduced clustering check
-                if len(recent_same_signals) < 2:  # Limit consecutive signals
+                recent_same_signals = [s for s in signals[-5:] if s['type'] == signal_type]  # Increased clustering check
+                if len(recent_same_signals) < 3:  # Increased limit for consecutive signals
                     signal_data = {
                         "date": current_date.strftime("%Y-%m-%dT%H:%M:%SZ"),
                         "price": float(current_price),
@@ -4232,6 +4307,13 @@ def generate_live_trading_signals(data, timeframe):
         print(f"Generated {len(recent_signals)} enhanced live trading signals for {timeframe}")
         if len(recent_signals) > 0:
             print(f"Sample signal: {recent_signals[0]}")
+        else:
+            print("=== NO SIGNALS GENERATED - POSSIBLE REASONS ===")
+            print("1. All indicator scores were below the minimum threshold (25)")
+            print("2. Confidence levels were below the minimum threshold (0.3)")
+            print("3. Signal clustering prevention blocked the signals")
+            print("4. Insufficient data for indicator calculations")
+            print("5. All indicators returned neutral values")
         
         return recent_signals
         
