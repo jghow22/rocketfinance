@@ -4247,9 +4247,9 @@ def generate_live_trading_signals(data, timeframe):
             print(f"Buy score: {buy_score}, Sell score: {sell_score}")
             print(f"Max possible score: {max_possible_score}")
             
-            # Determine final signal based on enhanced scoring system (relaxed thresholds)
+            # Determine final signal based on enhanced scoring system (very relaxed thresholds)
             max_possible_score = 300  # Increased due to more indicators
-            if buy_score > sell_score and buy_score >= 25:  # Relaxed minimum threshold
+            if buy_score > sell_score and buy_score >= 15:  # Very relaxed minimum threshold
                 signal_type = "buy"
                 if buy_score >= 80:
                     signal_strength = "strong"
@@ -4261,7 +4261,7 @@ def generate_live_trading_signals(data, timeframe):
                     signal_strength = "weak"
                     confidence = min(0.5, buy_score / max_possible_score)
             
-            elif sell_score > buy_score and sell_score >= 25:  # Relaxed minimum threshold
+            elif sell_score > buy_score and sell_score >= 15:  # Very relaxed minimum threshold
                 signal_type = "sell"
                 if sell_score >= 80:
                     signal_strength = "strong"
@@ -4274,7 +4274,7 @@ def generate_live_trading_signals(data, timeframe):
                     confidence = min(0.5, sell_score / max_possible_score)
             
             # Only add signals with sufficient confidence and avoid signal clustering
-            if signal_type != "hold" and confidence >= 0.3:  # Further reduced confidence threshold
+            if signal_type != "hold" and confidence >= 0.2:  # Very reduced confidence threshold
                 # Check if we already have a recent signal of the same type
                 recent_same_signals = [s for s in signals[-5:] if s['type'] == signal_type]  # Increased clustering check
                 if len(recent_same_signals) < 3:  # Increased limit for consecutive signals
@@ -4301,6 +4301,63 @@ def generate_live_trading_signals(data, timeframe):
                     signals.append(signal_data)
                     print(f"Signal generated: {signal_type.upper()} {signal_strength} (score: {max(buy_score, sell_score)}, confidence: {confidence:.2f})")
         
+        # Fallback signal generation if no signals were generated
+        if len(signals) == 0:
+            print("=== GENERATING FALLBACK SIGNAL ===")
+            # Simple fallback based on price movement
+            if len(data) >= 2:
+                current_price = data['Close'].iloc[-1]
+                prev_price = data['Close'].iloc[-2]
+                price_change = current_price - prev_price
+                price_change_pct = (price_change / prev_price) * 100
+                
+                if price_change_pct > 1.0:  # More than 1% increase
+                    fallback_signal = {
+                        "date": datetime.now().strftime("%Y-%m-%dT%H:%M:%SZ"),
+                        "price": float(current_price),
+                        "type": "buy",
+                        "strength": "weak",
+                        "confidence": 0.3,
+                        "score": 20,
+                        "indicators": {
+                            "price_change": round(price_change_pct, 2),
+                            "fallback": True
+                        }
+                    }
+                    signals.append(fallback_signal)
+                    print(f"Fallback BUY signal generated (price change: {price_change_pct:.2f}%)")
+                elif price_change_pct < -1.0:  # More than 1% decrease
+                    fallback_signal = {
+                        "date": datetime.now().strftime("%Y-%m-%dT%H:%M:%SZ"),
+                        "price": float(current_price),
+                        "type": "sell",
+                        "strength": "weak",
+                        "confidence": 0.3,
+                        "score": 20,
+                        "indicators": {
+                            "price_change": round(price_change_pct, 2),
+                            "fallback": True
+                        }
+                    }
+                    signals.append(fallback_signal)
+                    print(f"Fallback SELL signal generated (price change: {price_change_pct:.2f}%)")
+                else:
+                    # Neutral signal
+                    fallback_signal = {
+                        "date": datetime.now().strftime("%Y-%m-%dT%H:%M:%SZ"),
+                        "price": float(current_price),
+                        "type": "hold",
+                        "strength": "weak",
+                        "confidence": 0.2,
+                        "score": 10,
+                        "indicators": {
+                            "price_change": round(price_change_pct, 2),
+                            "fallback": True
+                        }
+                    }
+                    signals.append(fallback_signal)
+                    print(f"Fallback HOLD signal generated (price change: {price_change_pct:.2f}%)")
+        
         # Limit to recent signals (last 10 for cleaner display)
         recent_signals = signals[-10:] if len(signals) > 10 else signals
         
@@ -4309,8 +4366,8 @@ def generate_live_trading_signals(data, timeframe):
             print(f"Sample signal: {recent_signals[0]}")
         else:
             print("=== NO SIGNALS GENERATED - POSSIBLE REASONS ===")
-            print("1. All indicator scores were below the minimum threshold (25)")
-            print("2. Confidence levels were below the minimum threshold (0.3)")
+            print("1. All indicator scores were below the minimum threshold (15)")
+            print("2. Confidence levels were below the minimum threshold (0.2)")
             print("3. Signal clustering prevention blocked the signals")
             print("4. Insufficient data for indicator calculations")
             print("5. All indicators returned neutral values")
