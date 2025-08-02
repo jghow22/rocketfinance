@@ -4301,62 +4301,105 @@ def generate_live_trading_signals(data, timeframe):
                     signals.append(signal_data)
                     print(f"Signal generated: {signal_type.upper()} {signal_strength} (score: {max(buy_score, sell_score)}, confidence: {confidence:.2f})")
         
-        # Fallback signal generation if no signals were generated
+        # Enhanced signal generation with simplified logic
         if len(signals) == 0:
-            print("=== GENERATING FALLBACK SIGNAL ===")
-            # Simple fallback based on price movement
-            if len(data) >= 2:
+            print("=== GENERATING ENHANCED SIGNALS ===")
+            # Use a simpler but more effective approach based on key indicators
+            try:
                 current_price = data['Close'].iloc[-1]
-                prev_price = data['Close'].iloc[-2]
-                price_change = current_price - prev_price
-                price_change_pct = (price_change / prev_price) * 100
                 
-                if price_change_pct > 1.0:  # More than 1% increase
-                    fallback_signal = {
-                        "date": datetime.now().strftime("%Y-%m-%dT%H:%M:%SZ"),
-                        "price": float(current_price),
-                        "type": "buy",
-                        "strength": "weak",
-                        "confidence": 0.3,
-                        "score": 20,
-                        "indicators": {
-                            "price_change": round(price_change_pct, 2),
-                            "fallback": True
-                        }
-                    }
-                    signals.append(fallback_signal)
-                    print(f"Fallback BUY signal generated (price change: {price_change_pct:.2f}%)")
-                elif price_change_pct < -1.0:  # More than 1% decrease
-                    fallback_signal = {
-                        "date": datetime.now().strftime("%Y-%m-%dT%H:%M:%SZ"),
-                        "price": float(current_price),
-                        "type": "sell",
-                        "strength": "weak",
-                        "confidence": 0.3,
-                        "score": 20,
-                        "indicators": {
-                            "price_change": round(price_change_pct, 2),
-                            "fallback": True
-                        }
-                    }
-                    signals.append(fallback_signal)
-                    print(f"Fallback SELL signal generated (price change: {price_change_pct:.2f}%)")
+                # Simple but effective signal generation
+                signal_score = 0
+                signal_type = "hold"
+                
+                # 1. RSI Analysis (30% weight)
+                if 'RSI' in data.columns and not pd.isna(data['RSI'].iloc[-1]):
+                    rsi = data['RSI'].iloc[-1]
+                    if rsi < 30:
+                        signal_score += 30  # Oversold - buy signal
+                    elif rsi > 70:
+                        signal_score -= 30  # Overbought - sell signal
+                
+                # 2. MACD Analysis (25% weight)
+                if 'MACD' in data.columns and 'MACD_Signal' in data.columns:
+                    macd = data['MACD'].iloc[-1]
+                    macd_signal = data['MACD_Signal'].iloc[-1]
+                    if not pd.isna(macd) and not pd.isna(macd_signal):
+                        if macd > macd_signal:
+                            signal_score += 25  # Bullish crossover
+                        else:
+                            signal_score -= 25  # Bearish crossover
+                
+                # 3. Moving Average Analysis (20% weight)
+                if 'SMA_20' in data.columns and 'SMA_50' in data.columns:
+                    sma_20 = data['SMA_20'].iloc[-1]
+                    sma_50 = data['SMA_50'].iloc[-1]
+                    if not pd.isna(sma_20) and not pd.isna(sma_50):
+                        if current_price > sma_20 > sma_50:
+                            signal_score += 20  # Strong uptrend
+                        elif current_price < sma_20 < sma_50:
+                            signal_score -= 20  # Strong downtrend
+                
+                # 4. Price Action (15% weight)
+                if len(data) >= 5:
+                    recent_high = data['High'].tail(5).max()
+                    recent_low = data['Low'].tail(5).min()
+                    if current_price > recent_high * 0.98:  # Near recent high
+                        signal_score += 15
+                    elif current_price < recent_low * 1.02:  # Near recent low
+                        signal_score -= 15
+                
+                # 5. Volume Analysis (10% weight)
+                if 'Volume' in data.columns and len(data) >= 20:
+                    avg_volume = data['Volume'].tail(20).mean()
+                    current_volume = data['Volume'].iloc[-1]
+                    if not pd.isna(avg_volume) and not pd.isna(current_volume):
+                        if current_volume > avg_volume * 1.5:  # High volume
+                            if signal_score > 0:
+                                signal_score += 10
+                            elif signal_score < 0:
+                                signal_score -= 10
+                
+                # Determine signal based on score
+                if signal_score >= 20:
+                    signal_type = "buy"
+                    strength = "strong" if signal_score >= 50 else "moderate"
+                    confidence = min(0.9, signal_score / 100)
+                elif signal_score <= -20:
+                    signal_type = "sell"
+                    strength = "strong" if signal_score <= -50 else "moderate"
+                    confidence = min(0.9, abs(signal_score) / 100)
                 else:
-                    # Neutral signal
-                    fallback_signal = {
+                    signal_type = "hold"
+                    strength = "weak"
+                    confidence = 0.3
+                
+                # Only generate signals if we have a clear direction
+                if signal_type != "hold":
+                    enhanced_signal = {
                         "date": datetime.now().strftime("%Y-%m-%dT%H:%M:%SZ"),
                         "price": float(current_price),
-                        "type": "hold",
-                        "strength": "weak",
-                        "confidence": 0.2,
-                        "score": 10,
+                        "type": signal_type,
+                        "strength": strength,
+                        "confidence": round(confidence, 2),
+                        "score": abs(signal_score),
                         "indicators": {
-                            "price_change": round(price_change_pct, 2),
-                            "fallback": True
+                            "rsi": float(data['RSI'].iloc[-1]) if 'RSI' in data.columns and not pd.isna(data['RSI'].iloc[-1]) else None,
+                            "macd": float(data['MACD'].iloc[-1]) if 'MACD' in data.columns and not pd.isna(data['MACD'].iloc[-1]) else None,
+                            "sma_20": float(data['SMA_20'].iloc[-1]) if 'SMA_20' in data.columns and not pd.isna(data['SMA_20'].iloc[-1]) else None,
+                            "signal_score": signal_score,
+                            "enhanced": True
                         }
                     }
-                    signals.append(fallback_signal)
-                    print(f"Fallback HOLD signal generated (price change: {price_change_pct:.2f}%)")
+                    signals.append(enhanced_signal)
+                    print(f"Enhanced {signal_type.upper()} signal generated (score: {signal_score}, confidence: {confidence:.2f})")
+                else:
+                    print(f"No clear signal direction (score: {signal_score})")
+                    
+            except Exception as e:
+                print(f"Error in enhanced signal generation: {e}")
+                import traceback
+                traceback.print_exc()
         
         # Limit to recent signals (last 10 for cleaner display)
         recent_signals = signals[-10:] if len(signals) > 10 else signals
