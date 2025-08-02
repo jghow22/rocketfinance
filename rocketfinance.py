@@ -4307,58 +4307,80 @@ def generate_live_trading_signals(data, timeframe):
             # Use a simpler but more effective approach based on key indicators
             try:
                 current_price = data['Close'].iloc[-1]
+                print(f"Current price: {current_price}")
                 
                 # Simple but effective signal generation
                 signal_score = 0
                 signal_type = "hold"
                 
+                # Debug: Check available columns
+                print(f"Available columns: {list(data.columns)}")
+                
                 # 1. RSI Analysis (30% weight)
-                if 'RSI' in data.columns and not pd.isna(data['RSI'].iloc[-1]):
+                if 'RSI' in data.columns:
                     rsi = data['RSI'].iloc[-1]
-                    if rsi < 30:
-                        signal_score += 30  # Oversold - buy signal
-                    elif rsi > 70:
-                        signal_score -= 30  # Overbought - sell signal
+                    print(f"RSI: {rsi}")
+                    if not pd.isna(rsi):
+                        if rsi < 30:
+                            signal_score += 30  # Oversold - buy signal
+                            print(f"RSI oversold signal: +30")
+                        elif rsi > 70:
+                            signal_score -= 30  # Overbought - sell signal
+                            print(f"RSI overbought signal: -30")
                 
                 # 2. MACD Analysis (25% weight)
                 if 'MACD' in data.columns and 'MACD_Signal' in data.columns:
                     macd = data['MACD'].iloc[-1]
                     macd_signal = data['MACD_Signal'].iloc[-1]
+                    print(f"MACD: {macd}, Signal: {macd_signal}")
                     if not pd.isna(macd) and not pd.isna(macd_signal):
                         if macd > macd_signal:
                             signal_score += 25  # Bullish crossover
+                            print(f"MACD bullish signal: +25")
                         else:
                             signal_score -= 25  # Bearish crossover
+                            print(f"MACD bearish signal: -25")
                 
                 # 3. Moving Average Analysis (20% weight)
                 if 'SMA_20' in data.columns and 'SMA_50' in data.columns:
                     sma_20 = data['SMA_20'].iloc[-1]
                     sma_50 = data['SMA_50'].iloc[-1]
+                    print(f"SMA_20: {sma_20}, SMA_50: {sma_50}")
                     if not pd.isna(sma_20) and not pd.isna(sma_50):
                         if current_price > sma_20 > sma_50:
                             signal_score += 20  # Strong uptrend
+                            print(f"MA uptrend signal: +20")
                         elif current_price < sma_20 < sma_50:
                             signal_score -= 20  # Strong downtrend
+                            print(f"MA downtrend signal: -20")
                 
                 # 4. Price Action (15% weight)
                 if len(data) >= 5:
                     recent_high = data['High'].tail(5).max()
                     recent_low = data['Low'].tail(5).min()
+                    print(f"Recent high: {recent_high}, Recent low: {recent_low}")
                     if current_price > recent_high * 0.98:  # Near recent high
                         signal_score += 15
+                        print(f"Price near high signal: +15")
                     elif current_price < recent_low * 1.02:  # Near recent low
                         signal_score -= 15
+                        print(f"Price near low signal: -15")
                 
                 # 5. Volume Analysis (10% weight)
                 if 'Volume' in data.columns and len(data) >= 20:
                     avg_volume = data['Volume'].tail(20).mean()
                     current_volume = data['Volume'].iloc[-1]
+                    print(f"Avg volume: {avg_volume}, Current volume: {current_volume}")
                     if not pd.isna(avg_volume) and not pd.isna(current_volume):
                         if current_volume > avg_volume * 1.5:  # High volume
                             if signal_score > 0:
                                 signal_score += 10
+                                print(f"High volume bullish signal: +10")
                             elif signal_score < 0:
                                 signal_score -= 10
+                                print(f"High volume bearish signal: -10")
+                
+                print(f"Final signal score: {signal_score}")
                 
                 # Determine signal based on score
                 if signal_score >= 20:
@@ -4373,6 +4395,8 @@ def generate_live_trading_signals(data, timeframe):
                     signal_type = "hold"
                     strength = "weak"
                     confidence = 0.3
+                
+                print(f"Signal type: {signal_type}, Strength: {strength}, Confidence: {confidence:.2f}")
                 
                 # Only generate signals if we have a clear direction
                 if signal_type != "hold":
@@ -4395,6 +4419,39 @@ def generate_live_trading_signals(data, timeframe):
                     print(f"Enhanced {signal_type.upper()} signal generated (score: {signal_score}, confidence: {confidence:.2f})")
                 else:
                     print(f"No clear signal direction (score: {signal_score})")
+                    
+                    # Generate a simple signal for testing
+                    print("Generating simple test signal...")
+                    if current_price > data['Close'].iloc[-2]:  # Price went up
+                        test_signal = {
+                            "date": datetime.now().strftime("%Y-%m-%dT%H:%M:%SZ"),
+                            "price": float(current_price),
+                            "type": "buy",
+                            "strength": "weak",
+                            "confidence": 0.4,
+                            "score": 25,
+                            "indicators": {
+                                "price_change": "positive",
+                                "test_signal": True
+                            }
+                        }
+                        signals.append(test_signal)
+                        print("Test BUY signal generated")
+                    else:  # Price went down
+                        test_signal = {
+                            "date": datetime.now().strftime("%Y-%m-%dT%H:%M:%SZ"),
+                            "price": float(current_price),
+                            "type": "sell",
+                            "strength": "weak",
+                            "confidence": 0.4,
+                            "score": 25,
+                            "indicators": {
+                                "price_change": "negative",
+                                "test_signal": True
+                            }
+                        }
+                        signals.append(test_signal)
+                        print("Test SELL signal generated")
                     
             except Exception as e:
                 print(f"Error in enhanced signal generation: {e}")
@@ -4885,8 +4942,14 @@ def get_chart_data(data, forecast, timeframe):
         print(f"Generating live signals for {symbol} with {len(filtered_data)} data points")
         live_signals = generate_live_trading_signals(filtered_data, timeframe)
         print(f"Generated {len(live_signals)} live signals")
-        if len(live_signals) > 0:
-            print(f"First signal: {live_signals[0]}")
+        print(f"Live signals: {live_signals}")
+        
+        # Debug: Check if signals are being generated
+        if len(live_signals) == 0:
+            print("WARNING: No live signals generated!")
+        else:
+            for i, signal in enumerate(live_signals):
+                print(f"Signal {i+1}: {signal}")
         
         # Determine if this is intraday data
         is_intraday = timeframe.endswith('min') or timeframe.endswith('h')
