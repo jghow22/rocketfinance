@@ -4544,6 +4544,14 @@ def generate_live_trading_signals(data, timeframe):
         all_signals = signals + historical_signals
         print(f"Total signals: {len(all_signals)} (current: {len(signals)}, historical: {len(historical_signals)})")
         
+        # Debug: Show sample of historical signals
+        if len(historical_signals) > 0:
+            print("Sample historical signals:")
+            for i, signal in enumerate(historical_signals[:5]):  # Show first 5
+                print(f"  Historical {i+1}: {signal['type']} at {signal['date']} (price: {signal['price']}, strength: {signal['strength']})")
+        else:
+            print("No historical signals generated")
+        
         # Limit to recent signals (last 15 for cleaner display)
         recent_signals = all_signals[-15:] if len(all_signals) > 15 else all_signals
         
@@ -5051,6 +5059,10 @@ def get_chart_data(data, forecast, timeframe):
         # Generate historical signals based on price movements and technical indicators
         print("Generating historical signals...")
         historical_signals = []
+        
+        # Debug: Check what indicators are available
+        available_indicators = [col for col in filtered_data.columns if col not in ['Open', 'High', 'Low', 'Close', 'Volume']]
+        print(f"Available indicators for historical signals: {available_indicators}")
         
         try:
             # Generate signals for the last 30 data points (or all if less than 30)
