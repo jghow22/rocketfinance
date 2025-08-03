@@ -4458,8 +4458,94 @@ def generate_live_trading_signals(data, timeframe):
                 import traceback
                 traceback.print_exc()
         
-        # Limit to recent signals (last 10 for cleaner display)
-        recent_signals = signals[-10:] if len(signals) > 10 else signals
+        # Generate historical signals based on price data
+        historical_signals = []
+        if len(filtered_data) >= 15:  # Need at least 15 data points for historical analysis
+            print(f"Generating historical signals from {len(filtered_data)} data points")
+            
+            # Analyze the last 15 data points for historical signals
+            recent_data = filtered_data.tail(15)
+            
+            for i in range(3, len(recent_data)):  # Start from 3rd point to have enough history
+                current_row = recent_data.iloc[i]
+                prev_row = recent_data.iloc[i-1]
+                
+                # Calculate indicators for this point
+                score = 0
+                indicators = {}
+                
+                # 1. Price change (1%+ moves for more sensitivity)
+                price_change = ((current_row['Close'] - prev_row['Close']) / prev_row['Close']) * 100
+                if abs(price_change) >= 1:
+                    if price_change > 0:
+                        score += 2
+                        indicators['price_change'] = 'positive'
+                    else:
+                        score -= 2
+                        indicators['price_change'] = 'negative'
+                
+                # 2. RSI conditions (more sensitive)
+                if 'RSI' in current_row and not pd.isna(current_row['RSI']):
+                    if current_row['RSI'] < 35:
+                        score += 1
+                        indicators['rsi'] = 'oversold'
+                    elif current_row['RSI'] > 65:
+                        score -= 1
+                        indicators['rsi'] = 'overbought'
+                
+                # 3. MACD conditions
+                if 'MACD' in current_row and 'MACD_Signal' in current_row:
+                    if not pd.isna(current_row['MACD']) and not pd.isna(current_row['MACD_Signal']):
+                        if current_row['MACD'] > current_row['MACD_Signal']:
+                            score += 1
+                            indicators['macd'] = 'bullish'
+                        else:
+                            score -= 1
+                            indicators['macd'] = 'bearish'
+                
+                # 4. Volume conditions (more sensitive)
+                if 'Volume' in current_row and 'Volume_SMA' in current_row:
+                    if not pd.isna(current_row['Volume']) and not pd.isna(current_row['Volume_SMA']):
+                        volume_ratio = current_row['Volume'] / current_row['Volume_SMA']
+                        if volume_ratio > 1.2:  # 20%+ volume spike
+                            if price_change > 0:
+                                score += 1
+                                indicators['volume'] = 'high_bullish'
+                            else:
+                                score -= 1
+                                indicators['volume'] = 'high_bearish'
+                
+                # Generate signal based on score (lower thresholds for more signals)
+                if score >= 3:
+                    signal_type = 'buy'
+                    strength = 'strong' if score >= 5 else 'moderate'
+                elif score <= -3:
+                    signal_type = 'sell'
+                    strength = 'strong' if score <= -5 else 'moderate'
+                else:
+                    continue  # No signal for this point
+                
+                # Create historical signal
+                historical_signal = {
+                    "date": current_row.name.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                    "price": float(current_row['Close']),
+                    "type": signal_type,
+                    "strength": strength,
+                    "confidence": min(abs(score) / 8, 0.9),
+                    "score": abs(score),
+                    "indicators": indicators
+                }
+                historical_signals.append(historical_signal)
+                print(f"Generated historical {signal_type} signal at {historical_signal['date']} with score {score}")
+        
+        print(f"Generated {len(historical_signals)} historical signals")
+        
+        # Combine current and historical signals
+        all_signals = signals + historical_signals
+        print(f"Total signals: {len(all_signals)} (current: {len(signals)}, historical: {len(historical_signals)})")
+        
+        # Limit to recent signals (last 15 for cleaner display)
+        recent_signals = all_signals[-15:] if len(all_signals) > 15 else all_signals
         
         print(f"Generated {len(recent_signals)} enhanced live trading signals for {timeframe}")
         if len(recent_signals) > 0:
