@@ -4962,7 +4962,144 @@ def get_chart_data(data, forecast, timeframe):
             traceback.print_exc()
             live_signals = []
         
-        # Fallback: Always generate at least one test signal
+        # Generate historical signals based on price movements and technical indicators
+        print("Generating historical signals...")
+        historical_signals = []
+        
+        try:
+            # Generate signals for the last 30 data points (or all if less than 30)
+            lookback_period = min(30, len(filtered_data))
+            start_index = max(0, len(filtered_data) - lookback_period)
+            
+            for i in range(start_index, len(filtered_data)):
+                if i < 5:  # Skip first few points to have enough data for indicators
+                    continue
+                    
+                current_row = filtered_data.iloc[i]
+                current_price = current_row['Close']
+                current_date = filtered_data.index[i]
+                
+                # Calculate simple indicators for this point
+                price_change = 0
+                rsi_signal = 0
+                macd_signal = 0
+                volume_signal = 0
+                
+                # Price change signal
+                if i > 0:
+                    prev_price = filtered_data.iloc[i-1]['Close']
+                    price_change = (current_price - prev_price) / prev_price * 100
+                
+                # RSI signal
+                if 'RSI' in current_row and not pd.isna(current_row['RSI']):
+                    rsi = current_row['RSI']
+                    if rsi < 30:
+                        rsi_signal = 1  # Oversold - potential buy
+                    elif rsi > 70:
+                        rsi_signal = -1  # Overbought - potential sell
+                
+                # MACD signal (if available)
+                if 'MACD' in current_row and not pd.isna(current_row['MACD']):
+                    macd = current_row['MACD']
+                    if i > 0:
+                        prev_macd = filtered_data.iloc[i-1]['MACD']
+                        if not pd.isna(prev_macd):
+                            if macd > 0 and prev_macd <= 0:
+                                macd_signal = 1  # MACD crossed above zero
+                            elif macd < 0 and prev_macd >= 0:
+                                macd_signal = -1  # MACD crossed below zero
+                
+                # Volume signal (if available)
+                if 'Volume' in current_row and not pd.isna(current_row['Volume']):
+                    if i > 0:
+                        prev_volume = filtered_data.iloc[i-1]['Volume']
+                        if not pd.isna(prev_volume) and prev_volume > 0:
+                            volume_ratio = current_row['Volume'] / prev_volume
+                            if volume_ratio > 1.5:  # 50% increase in volume
+                                volume_signal = 1
+                
+                # Combine signals to determine buy/sell
+                total_score = 0
+                signal_type = "hold"
+                strength = "weak"
+                confidence = 0.3
+                
+                # Weight the signals
+                if price_change > 2:  # 2% price increase
+                    total_score += 2
+                elif price_change < -2:  # 2% price decrease
+                    total_score -= 2
+                
+                if rsi_signal == 1:
+                    total_score += 3
+                elif rsi_signal == -1:
+                    total_score -= 3
+                
+                if macd_signal == 1:
+                    total_score += 2
+                elif macd_signal == -1:
+                    total_score -= 2
+                
+                if volume_signal == 1:
+                    total_score += 1
+                
+                # Determine signal type and strength
+                if total_score >= 4:
+                    signal_type = "buy"
+                    strength = "strong" if total_score >= 6 else "moderate"
+                    confidence = min(0.8, 0.3 + (total_score - 4) * 0.1)
+                elif total_score <= -4:
+                    signal_type = "sell"
+                    strength = "strong" if total_score <= -6 else "moderate"
+                    confidence = min(0.8, 0.3 + abs(total_score - 4) * 0.1)
+                
+                # Only add significant signals (not hold signals)
+                if signal_type != "hold":
+                    # Convert datetime to string format
+                    if hasattr(current_date, 'strftime'):
+                        date_str = current_date.strftime("%Y-%m-%dT%H:%M:%SZ")
+                    else:
+                        date_str = str(current_date)
+                    
+                    historical_signal = {
+                        "date": date_str,
+                        "price": float(current_price),
+                        "type": signal_type,
+                        "strength": strength,
+                        "confidence": confidence,
+                        "score": abs(total_score),
+                        "indicators": {
+                            "price_change": f"{price_change:.2f}%",
+                            "rsi_signal": rsi_signal,
+                            "macd_signal": macd_signal,
+                            "volume_signal": volume_signal,
+                            "total_score": total_score,
+                            "historical": True
+                        }
+                    }
+                    historical_signals.append(historical_signal)
+            
+            print(f"Generated {len(historical_signals)} historical signals")
+            
+            # Combine historical signals with current live signals
+            all_signals = historical_signals + live_signals
+            print(f"Total signals (historical + live): {len(all_signals)}")
+            
+            # Limit to most recent 20 signals to avoid overcrowding
+            if len(all_signals) > 20:
+                all_signals = all_signals[-20:]
+                print(f"Limited to 20 most recent signals")
+            
+            live_signals = all_signals
+            
+        except Exception as e:
+            print(f"ERROR generating historical signals: {e}")
+            import traceback
+            traceback.print_exc()
+            # Fallback to original live signals only
+            pass
+        
+        # Fallback: Always generate at least one test signal if no signals at all
         if len(live_signals) == 0:
             print("Creating fallback test signal...")
             try:
