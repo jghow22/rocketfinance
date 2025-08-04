@@ -5277,19 +5277,21 @@ def get_chart_data(data, forecast, timeframe):
                     if volume_signal == 1:
                         total_score += 1
                     
-                    # Determine signal type and strength
-                    if total_score >= 3:
+                    # Determine signal type and strength (more sensitive for current signal)
+                    if total_score >= 2:  # Lowered threshold from 3 to 2
                         signal_type = "buy"
-                        strength = "strong" if total_score >= 6 else "moderate"
+                        strength = "strong" if total_score >= 5 else "moderate"  # Lowered from 6 to 5
                         confidence = min(0.8, 0.3 + (total_score * 0.1))
-                    elif total_score <= -3:
+                    elif total_score <= -2:  # Lowered threshold from -3 to -2
                         signal_type = "sell"
-                        strength = "strong" if total_score <= -6 else "moderate"
+                        strength = "strong" if total_score <= -5 else "moderate"  # Lowered from -6 to -5
                         confidence = min(0.8, 0.3 + (abs(total_score) * 0.1))
                     else:
                         signal_type = "hold"
                         strength = "weak"
                         confidence = 0.3
+                    
+                    print(f"Current signal calculation - Price change: {price_change:.2f}%, RSI signal: {rsi_signal}, MACD signal: {macd_signal}, Volume signal: {volume_signal}, Total score: {total_score}, Signal type: {signal_type}")
                     
                     current_signal = {
                         "date": current_date.strftime("%Y-%m-%dT%H:%M:%SZ"),
@@ -5309,6 +5311,8 @@ def get_chart_data(data, forecast, timeframe):
                     }
                     
                     print(f"Current signal generated: {current_signal}")
+                    print(f"Current signal type: {current_signal['type']}, strength: {current_signal['strength']}, score: {current_signal['score']}")
+                    print(f"Current signal historical flag: {current_signal['indicators']['historical']}")
             except Exception as e:
                 print(f"Error generating current signal: {e}")
                 current_signal = None
