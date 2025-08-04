@@ -5207,9 +5207,118 @@ def get_chart_data(data, forecast, timeframe):
             
             print(f"Generated {len(historical_signals)} historical signals")
             
-            # Combine historical signals with current live signals
+            # Generate a current signal for the most recent data point
+            print("Generating current signal for most recent data point...")
+            current_signal = None
+            
+            try:
+                if len(filtered_data) > 0:
+                    current_row = filtered_data.iloc[-1]
+                    current_price = current_row['Close']
+                    current_date = filtered_data.index[-1]
+                    
+                    # Calculate indicators for current signal
+                    price_change = 0
+                    rsi_signal = 0
+                    macd_signal = 0
+                    volume_signal = 0
+                    
+                    # Price change signal
+                    if len(filtered_data) > 1:
+                        prev_price = filtered_data.iloc[-2]['Close']
+                        price_change = (current_price - prev_price) / prev_price * 100
+                    
+                    # RSI signal
+                    if 'RSI' in current_row and not pd.isna(current_row['RSI']):
+                        rsi = current_row['RSI']
+                        if rsi < 35:
+                            rsi_signal = 1  # Oversold - potential buy
+                        elif rsi > 65:
+                            rsi_signal = -1  # Overbought - potential sell
+                    
+                    # MACD signal
+                    if 'MACD' in current_row and not pd.isna(current_row['MACD']):
+                        macd = current_row['MACD']
+                        if len(filtered_data) > 1:
+                            prev_macd = filtered_data.iloc[-2]['MACD']
+                            if not pd.isna(prev_macd):
+                                if macd > 0 and prev_macd <= 0:
+                                    macd_signal = 1  # MACD crossed above zero
+                                elif macd < 0 and prev_macd >= 0:
+                                    macd_signal = -1  # MACD crossed below zero
+                    
+                    # Volume signal
+                    if 'Volume' in current_row and not pd.isna(current_row['Volume']):
+                        if len(filtered_data) > 1:
+                            prev_volume = filtered_data.iloc[-2]['Volume']
+                            if not pd.isna(prev_volume) and prev_volume > 0:
+                                volume_ratio = current_row['Volume'] / prev_volume
+                                if volume_ratio > 1.2:
+                                    volume_signal = 1
+                    
+                    # Combine signals to determine current signal
+                    total_score = 0
+                    
+                    if price_change > 1:
+                        total_score += 2
+                    elif price_change < -1:
+                        total_score -= 2
+                    
+                    if rsi_signal == 1:
+                        total_score += 3
+                    elif rsi_signal == -1:
+                        total_score -= 3
+                    
+                    if macd_signal == 1:
+                        total_score += 2
+                    elif macd_signal == -1:
+                        total_score -= 2
+                    
+                    if volume_signal == 1:
+                        total_score += 1
+                    
+                    # Determine signal type and strength
+                    if total_score >= 3:
+                        signal_type = "buy"
+                        strength = "strong" if total_score >= 6 else "moderate"
+                        confidence = min(0.8, 0.3 + (total_score * 0.1))
+                    elif total_score <= -3:
+                        signal_type = "sell"
+                        strength = "strong" if total_score <= -6 else "moderate"
+                        confidence = min(0.8, 0.3 + (abs(total_score) * 0.1))
+                    else:
+                        signal_type = "hold"
+                        strength = "weak"
+                        confidence = 0.3
+                    
+                    current_signal = {
+                        "date": current_date.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                        "price": float(current_price),
+                        "type": signal_type,
+                        "strength": strength,
+                        "confidence": confidence,
+                        "score": total_score,
+                        "indicators": {
+                            "price_change": f"{price_change:.2f}%",
+                            "rsi_signal": rsi_signal,
+                            "macd_signal": macd_signal,
+                            "volume_signal": volume_signal,
+                            "total_score": total_score,
+                            "historical": False
+                        }
+                    }
+                    
+                    print(f"Current signal generated: {current_signal}")
+            except Exception as e:
+                print(f"Error generating current signal: {e}")
+                current_signal = None
+            
+            # Combine historical signals with current live signals and current signal
             all_signals = historical_signals + live_signals
-            print(f"Total signals (historical + live): {len(all_signals)}")
+            if current_signal:
+                all_signals.append(current_signal)
+            
+            print(f"Total signals (historical + live + current): {len(all_signals)}")
             
             # Limit to most recent 20 signals to avoid overcrowding
             if len(all_signals) > 20:
