@@ -5256,35 +5256,39 @@ def get_chart_data(data, forecast, timeframe):
                                 if volume_ratio > 1.2:
                                     volume_signal = 1
                     
-                    # Combine signals to determine current signal
+                    # Combine signals to determine current signal (even more sensitive)
                     total_score = 0
                     
-                    if price_change > 1:
-                        total_score += 2
-                    elif price_change < -1:
-                        total_score -= 2
+                    # Price change signal (more sensitive)
+                    if price_change > 0.5:  # Lowered from 1% to 0.5%
+                        total_score += 3  # Increased from 2 to 3
+                    elif price_change < -0.5:  # Lowered from -1% to -0.5%
+                        total_score -= 3  # Increased from -2 to -3
                     
+                    # RSI signal (more sensitive)
                     if rsi_signal == 1:
-                        total_score += 3
+                        total_score += 4  # Increased from 3 to 4
                     elif rsi_signal == -1:
-                        total_score -= 3
+                        total_score -= 4  # Increased from -3 to -4
                     
+                    # MACD signal (more sensitive)
                     if macd_signal == 1:
-                        total_score += 2
+                        total_score += 3  # Increased from 2 to 3
                     elif macd_signal == -1:
-                        total_score -= 2
+                        total_score -= 3  # Increased from -2 to -3
                     
+                    # Volume signal (more sensitive)
                     if volume_signal == 1:
-                        total_score += 1
+                        total_score += 2  # Increased from 1 to 2
                     
-                    # Determine signal type and strength (more sensitive for current signal)
-                    if total_score >= 2:  # Lowered threshold from 3 to 2
+                    # Determine signal type and strength (even more sensitive for current signal)
+                    if total_score >= 1:  # Lowered threshold from 2 to 1
                         signal_type = "buy"
-                        strength = "strong" if total_score >= 5 else "moderate"  # Lowered from 6 to 5
+                        strength = "strong" if total_score >= 4 else "moderate"  # Lowered from 5 to 4
                         confidence = min(0.8, 0.3 + (total_score * 0.1))
-                    elif total_score <= -2:  # Lowered threshold from -3 to -2
+                    elif total_score <= -1:  # Lowered threshold from -2 to -1
                         signal_type = "sell"
-                        strength = "strong" if total_score <= -5 else "moderate"  # Lowered from -6 to -5
+                        strength = "strong" if total_score <= -4 else "moderate"  # Lowered from -5 to -4
                         confidence = min(0.8, 0.3 + (abs(total_score) * 0.1))
                     else:
                         signal_type = "hold"
@@ -5292,6 +5296,20 @@ def get_chart_data(data, forecast, timeframe):
                         confidence = 0.3
                     
                     print(f"Current signal calculation - Price change: {price_change:.2f}%, RSI signal: {rsi_signal}, MACD signal: {macd_signal}, Volume signal: {volume_signal}, Total score: {total_score}, Signal type: {signal_type}")
+                    
+                    # Fallback: If we still get hold, force a signal based on price change
+                    if signal_type == "hold" and abs(price_change) > 0.1:  # If price changed by more than 0.1%
+                        if price_change > 0:
+                            signal_type = "buy"
+                            strength = "weak"
+                            confidence = 0.4
+                            total_score = 1
+                        else:
+                            signal_type = "sell"
+                            strength = "weak"
+                            confidence = 0.4
+                            total_score = -1
+                        print(f"Fallback signal generated: {signal_type} due to price change of {price_change:.2f}%")
                     
                     current_signal = {
                         "date": current_date.strftime("%Y-%m-%dT%H:%M:%SZ"),
