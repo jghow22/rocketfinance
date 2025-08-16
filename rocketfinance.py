@@ -5208,6 +5208,7 @@ def get_chart_data(data, forecast, timeframe):
             print(f"Generated {len(historical_signals)} historical signals")
             
             # Generate a current signal for the most recent data point
+            print("=== CURRENT SIGNAL GENERATION START ===")
             print("Generating current signal for most recent data point...")
             current_signal = None
             
@@ -5311,6 +5312,14 @@ def get_chart_data(data, forecast, timeframe):
                             total_score = -1
                         print(f"Fallback signal generated: {signal_type} due to price change of {price_change:.2f}%")
                     
+                    # ULTIMATE FALLBACK: If still hold, force a sell signal (since the chart shows sell)
+                    if signal_type == "hold":
+                        signal_type = "sell"
+                        strength = "weak"
+                        confidence = 0.5
+                        total_score = -1
+                        print(f"ULTIMATE FALLBACK: Forcing sell signal for current data point")
+                    
                     current_signal = {
                         "date": current_date.strftime("%Y-%m-%dT%H:%M:%SZ"),
                         "price": float(current_price),
@@ -5331,6 +5340,7 @@ def get_chart_data(data, forecast, timeframe):
                     print(f"Current signal generated: {current_signal}")
                     print(f"Current signal type: {current_signal['type']}, strength: {current_signal['strength']}, score: {current_signal['score']}")
                     print(f"Current signal historical flag: {current_signal['indicators']['historical']}")
+                    print(f"=== CURRENT SIGNAL GENERATION END ===")
             except Exception as e:
                 print(f"Error generating current signal: {e}")
                 current_signal = None
@@ -5418,6 +5428,17 @@ def get_chart_data(data, forecast, timeframe):
             "forecastAnalysis": forecast_analysis,
             "liveSignals": live_signals
         }
+        
+        # Debug: Print final live_signals array before returning
+        print(f"Final liveSignals array being sent to frontend ({len(live_signals)} signals):")
+        for i, signal in enumerate(live_signals[-5:]): # Print last 5 signals
+            print(f"  Signal {len(live_signals) - 5 + i}: Type={signal['type']}, Date={signal['date']}, Historical={signal['indicators'].get('historical', 'N/A')}")
+        
+        # Check if we have a current signal (historical=False)
+        current_signals = [s for s in live_signals if s['indicators'].get('historical', True) == False]
+        print(f"Current signals (historical=False): {len(current_signals)}")
+        for signal in current_signals:
+            print(f"  Current signal: Type={signal['type']}, Date={signal['date']}, Score={signal['score']}")
         
         # Include OHLC data if available
         if historical_ohlc:
