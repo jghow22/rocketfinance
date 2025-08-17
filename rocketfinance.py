@@ -5451,45 +5451,11 @@ def get_chart_data(data, forecast, timeframe):
         import traceback
         traceback.print_exc()
         
-        # Return minimal chart data with better crypto detection
-        symbol = data.name if hasattr(data, 'name') else "UNKNOWN"
-        is_crypto = is_crypto_symbol(symbol)
-        
-        # Create realistic fallback data based on asset type
-        if is_crypto:
-            # Use current market prices for major cryptos
-            if symbol.upper() == "BTC":
-                base_price = 110000.0
-            elif symbol.upper() == "ETH":
-                base_price = 3500.0
-            elif symbol.upper() == "XRP":
-                base_price = 0.6
-            elif symbol.upper() == "SOL":
-                base_price = 150.0
-            elif symbol.upper() == "ADA":
-                base_price = 0.5
-            else:
-                base_price = 100.0
-            
-            dummy_values = [base_price + (i * base_price * 0.01) for i in range(5)]
-            dummy_forecast = [base_price + (i * base_price * 0.02) for i in range(1, 6)]
-        else:
-            dummy_values = [100.0 + i for i in range(5)]
-            dummy_forecast = [105.0 + i for i in range(5)]
-        
-        dummy_dates = [(datetime.now() - timedelta(days=i)).strftime("%Y-%m-%dT%H:%M:%SZ") for i in range(5, 0, -1)]
-        dummy_forecast_dates = [(datetime.now() + timedelta(days=i)).strftime("%Y-%m-%dT%H:%M:%SZ") for i in range(1, 6)]
-        
+        # No fallback data - return error indicator
         return {
-            "symbol": symbol,
-            "historicalDates": dummy_dates,
-            "historicalValues": dummy_values,
-            "forecastDates": dummy_forecast_dates,
-            "forecastValues": dummy_forecast,
-            "timeframe": timeframe,
-            "timeframeDisplay": timeframe,
-            "isIntraday": timeframe.endswith('min') or timeframe.endswith('h'),
-            "isCrypto": is_crypto
+            "error": f"Failed to generate chart data: {str(e)}",
+            "symbol": data.name if hasattr(data, 'name') else "UNKNOWN",
+            "timeframe": timeframe
         }
 
 # ---------------------------
