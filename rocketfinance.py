@@ -4244,12 +4244,12 @@ def generate_live_trading_signals(data, timeframe):
             
             # Print detailed scoring breakdown for debugging
             print(f"\n=== SIGNAL GENERATION DEBUG ===")
+            # Determine final signal based on enhanced scoring system (very relaxed thresholds)
+            max_possible_score = 300  # Increased due to more indicators
+            
             print(f"Current price: {current_price}")
             print(f"Buy score: {buy_score}, Sell score: {sell_score}")
             print(f"Max possible score: {max_possible_score}")
-            
-            # Determine final signal based on enhanced scoring system (very relaxed thresholds)
-            max_possible_score = 300  # Increased due to more indicators
             if buy_score > sell_score and buy_score >= 15:  # Very relaxed minimum threshold
                 signal_type = "buy"
                 if buy_score >= 80:
