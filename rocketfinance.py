@@ -1627,7 +1627,7 @@ def calculate_technical_indicators(data):
         df['RSI'] = df['RSI_14']
         
         # Moving Averages - Enhanced with more periods and types
-        for period in [5, 10, 20, 50, 100, 200]:
+        for period in [5, 10, 12, 20, 26, 50, 100, 200]:
             df[f'SMA_{period}'] = df['Close'].rolling(window=min(period, len(df))).mean()
             df[f'EMA_{period}'] = df['Close'].ewm(span=min(period, len(df)), adjust=False).mean()
         
@@ -2445,7 +2445,8 @@ def create_arima_model(data):
                 raise ValueError("Cannot create valid daily data")
         
         # Fit ARIMA model with simpler parameters for robustness
-        model = ARIMA(data_daily["Close"], order=(1, 1, 0), trend="c")
+        # Use trend="t" (linear) instead of "c" (constant) when d > 0
+        model = ARIMA(data_daily["Close"], order=(1, 1, 0), trend="t")
         model_fit = model.fit()
         
         print("ARIMA model created and fitted successfully.")
