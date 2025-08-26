@@ -4461,11 +4461,11 @@ def generate_live_trading_signals(data, timeframe):
         
         # Generate historical signals based on price data
         historical_signals = []
-        if len(filtered_data) >= 15:  # Need at least 15 data points for historical analysis
-            print(f"Generating historical signals from {len(filtered_data)} data points")
+        if len(data_with_indicators) >= 15:  # Need at least 15 data points for historical analysis
+            print(f"Generating historical signals from {len(data_with_indicators)} data points")
             
             # Analyze the last 15 data points for historical signals
-            recent_data = filtered_data.tail(15)
+            recent_data = data_with_indicators.tail(15)
             
             for i in range(3, len(recent_data)):  # Start from 3rd point to have enough history
                 current_row = recent_data.iloc[i]
@@ -4784,91 +4784,23 @@ def get_chart_data(data, forecast, timeframe):
         dict: Chart data for frontend rendering with enhanced forecast details
     """
     try:
-        # Basic validation
+        # Basic validation - no fallback data for production
         if data is None or len(data) == 0:
-            print("Cannot generate chart data with None or empty data")
-            # Return minimal chart data with better crypto detection
+            print("ERROR: Cannot generate chart data with None or empty data")
             symbol = data.name if hasattr(data, 'name') else "UNKNOWN"
-            is_crypto = is_crypto_symbol(symbol)
-            
-            # Create realistic fallback data based on asset type
-            if is_crypto:
-                # Use current market prices for major cryptos
-                if symbol.upper() == "BTC":
-                    base_price = 110000.0
-                elif symbol.upper() == "ETH":
-                    base_price = 3500.0
-                elif symbol.upper() == "XRP":
-                    base_price = 0.6
-                elif symbol.upper() == "SOL":
-                    base_price = 150.0
-                elif symbol.upper() == "ADA":
-                    base_price = 0.5
-                else:
-                    base_price = 100.0
-                
-                dummy_values = [base_price + (i * base_price * 0.01) for i in range(5)]
-                dummy_forecast = [base_price + (i * base_price * 0.02) for i in range(1, 6)]
-            else:
-                dummy_values = [100.0 + i for i in range(5)]
-                dummy_forecast = [105.0 + i for i in range(5)]
-            
-            dummy_dates = [(datetime.now() - timedelta(days=i)).strftime("%Y-%m-%dT%H:%M:%SZ") for i in range(5, 0, -1)]
-            dummy_forecast_dates = [(datetime.now() + timedelta(days=i)).strftime("%Y-%m-%dT%H:%M:%SZ") for i in range(1, 6)]
-            
             return {
+                "error": f"No market data available for symbol {symbol}",
                 "symbol": symbol,
-                "historicalDates": dummy_dates,
-                "historicalValues": dummy_values,
-                "forecastDates": dummy_forecast_dates,
-                "forecastValues": dummy_forecast,
-                "timeframe": timeframe,
-                "timeframeDisplay": timeframe,
-                "isIntraday": timeframe.endswith('min') or timeframe.endswith('h'),
-                "isCrypto": is_crypto
+                "timeframe": timeframe
             }
             
         if "Close" not in data.columns:
-            print("Close column missing for chart data")
-            # Return minimal chart data with better crypto detection
+            print("ERROR: Close column missing for chart data")
             symbol = data.name if hasattr(data, 'name') else "UNKNOWN"
-            is_crypto = is_crypto_symbol(symbol)
-            
-            # Create realistic fallback data based on asset type
-            if is_crypto:
-                # Use current market prices for major cryptos
-                if symbol.upper() == "BTC":
-                    base_price = 110000.0
-                elif symbol.upper() == "ETH":
-                    base_price = 3500.0
-                elif symbol.upper() == "XRP":
-                    base_price = 0.6
-                elif symbol.upper() == "SOL":
-                    base_price = 150.0
-                elif symbol.upper() == "ADA":
-                    base_price = 0.5
-                else:
-                    base_price = 100.0
-                
-                dummy_values = [base_price + (i * base_price * 0.01) for i in range(5)]
-                dummy_forecast = [base_price + (i * base_price * 0.02) for i in range(1, 6)]
-            else:
-                dummy_values = [100.0 + i for i in range(5)]
-                dummy_forecast = [105.0 + i for i in range(5)]
-            
-            dummy_dates = [(datetime.now() - timedelta(days=i)).strftime("%Y-%m-%dT%H:%M:%SZ") for i in range(5, 0, -1)]
-            dummy_forecast_dates = [(datetime.now() + timedelta(days=i)).strftime("%Y-%m-%dT%H:%M:%SZ") for i in range(1, 6)]
-            
             return {
+                "error": f"Invalid data format for symbol {symbol} - missing Close price data",
                 "symbol": symbol,
-                "historicalDates": dummy_dates,
-                "historicalValues": dummy_values,
-                "forecastDates": dummy_forecast_dates,
-                "forecastValues": dummy_forecast,
-                "timeframe": timeframe,
-                "timeframeDisplay": timeframe,
-                "isIntraday": timeframe.endswith('min') or timeframe.endswith('h'),
-                "isCrypto": is_crypto
+                "timeframe": timeframe
             }
         
         # Determine if this is crypto
@@ -5313,13 +5245,7 @@ def get_chart_data(data, forecast, timeframe):
                             total_score = -1
                         print(f"Fallback signal generated: {signal_type} due to price change of {price_change:.2f}%")
                     
-                    # ULTIMATE FALLBACK: If still hold, force a sell signal (since the chart shows sell)
-                    if signal_type == "hold":
-                        signal_type = "sell"
-                        strength = "weak"
-                        confidence = 0.5
-                        total_score = -1
-                        print(f"ULTIMATE FALLBACK: Forcing sell signal for current data point")
+                    # Keep hold signal if that's what the data indicates - no forced signals in production
                     
                     current_signal = {
                         "date": current_date.strftime("%Y-%m-%dT%H:%M:%SZ"),
@@ -5367,49 +5293,10 @@ def get_chart_data(data, forecast, timeframe):
             # Fallback to original live signals only
             pass
         
-        # Fallback: Always generate at least one test signal if no signals at all
+        # Production: No fallback signals - if no valid signals detected, return empty array
         if len(live_signals) == 0:
-            print("Creating fallback test signal...")
-            try:
-                current_price = filtered_data['Close'].iloc[-1]
-                prev_price = filtered_data['Close'].iloc[-2] if len(filtered_data) > 1 else current_price
-                
-                # Create multiple test signals to ensure we have some signals
-                test_signals = []
-                
-                # Current signal
-                if current_price > prev_price:
-                    test_signal = {
-                        "date": datetime.now().strftime("%Y-%m-%dT%H:%M:%SZ"),
-                        "price": float(current_price),
-                        "type": "buy",
-                        "strength": "weak",
-                        "confidence": 0.4,
-                        "score": 25,
-                        "indicators": {
-                            "price_change": "positive",
-                            "fallback_test": True
-                        }
-                    }
-                else:
-                    test_signal = {
-                        "date": datetime.now().strftime("%Y-%m-%dT%H:%M:%SZ"),
-                        "price": float(current_price),
-                        "type": "sell",
-                        "strength": "weak",
-                        "confidence": 0.4,
-                        "score": 25,
-                        "indicators": {
-                            "price_change": "negative",
-                            "fallback_test": True
-                        }
-                    }
-                
-                live_signals = [test_signal]
-                print(f"Created fallback test signal: {test_signal}")
-            except Exception as e:
-                print(f"ERROR creating fallback signal: {e}")
-                live_signals = []
+            print("No trading signals detected based on current market conditions")
+            live_signals = []
         
         # Determine if this is intraday data
         is_intraday = timeframe.endswith('min') or timeframe.endswith('h')
