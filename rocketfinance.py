@@ -6436,6 +6436,63 @@ def get_forecasts_api():
         response = jsonify({"forecasts": [], "error": str(e)})
         return response, 500
 
+@app.route("/api/options", methods=["GET"])
+def get_options_api():
+    """
+    Get options chain data for a symbol.
+    This is a placeholder endpoint - in production, you would integrate with a real options data provider.
+    """
+    try:
+        symbol = request.args.get("symbol", "AAPL").upper()
+        
+        # For now, return mock data structure
+        # In production, integrate with options data providers like:
+        # - TD Ameritrade API
+        # - Interactive Brokers API
+        # - Polygon.io
+        # - IEX Cloud
+        
+        # Mock options data structure
+        mock_options = {
+            "symbol": symbol,
+            "underlyingPrice": 150.25,
+            "options": {
+                "expirations": [
+                    {"date": "2024-02-16", "daysToExpiration": 7},
+                    {"date": "2024-02-23", "daysToExpiration": 14},
+                    {"date": "2024-03-01", "daysToExpiration": 21},
+                    {"date": "2024-03-15", "daysToExpiration": 35}
+                ],
+                "chains": [
+                    {
+                        "expiration": "2024-02-16",
+                        "strikes": [
+                            {
+                                "strikePrice": 145,
+                                "call": {"lastPrice": 6.50, "bid": 6.25, "ask": 6.75, "volume": 245, "openInterest": 1200},
+                                "put": {"lastPrice": 1.25, "bid": 1.20, "ask": 1.30, "volume": 89, "openInterest": 890}
+                            },
+                            {
+                                "strikePrice": 150,
+                                "call": {"lastPrice": 3.75, "bid": 3.50, "ask": 3.85, "volume": 567, "openInterest": 2100},
+                                "put": {"lastPrice": 3.50, "bid": 3.40, "ask": 3.60, "volume": 234, "openInterest": 1450}
+                            },
+                            {
+                                "strikePrice": 155,
+                                "call": {"lastPrice": 1.85, "bid": 1.75, "ask": 1.95, "volume": 123, "openInterest": 890},
+                                "put": {"lastPrice": 6.75, "bid": 6.50, "ask": 7.00, "volume": 78, "openInterest": 650}
+                            }
+                        ]
+                    }
+                ]
+            }
+        }
+        
+        return jsonify(mock_options)
+        
+    except Exception as e:
+        return jsonify({"error": f"Failed to fetch options data: {str(e)}"}), 500
+
 # ---------------------------
 # Track Performance Endpoint
 # ---------------------------
