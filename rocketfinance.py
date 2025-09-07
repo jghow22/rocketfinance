@@ -87,7 +87,9 @@ def safe_datetime_subtraction(dt1, dt2):
 
 # Initialize Flask App with static folder
 app = Flask(__name__, static_folder="static")
-CORS(app, resources={r"/*": {"origins": "*"}})
+CORS(app, resources={r"/*": {"origins": ["https://www.redtapesoftwares.com", "https://redtapesoftwares.com", "*"]}}, 
+     allow_headers=["Content-Type", "Authorization", "Access-Control-Allow-Credentials"],
+     supports_credentials=True)
 
 # Set API keys from environment variables
 # OpenAI API key will be set when creating the client
@@ -7250,6 +7252,9 @@ def process():
         response_obj.headers['Cache-Control'] = 'no-cache, no-store, must-revalidate'
         response_obj.headers['Pragma'] = 'no-cache'
         response_obj.headers['Expires'] = '0'
+        response_obj.headers['Access-Control-Allow-Origin'] = '*'
+        response_obj.headers['Access-Control-Allow-Methods'] = 'GET, POST, OPTIONS'
+        response_obj.headers['Access-Control-Allow-Headers'] = 'Content-Type, Authorization'
         
         print("Response prepared successfully")
         return response_obj
@@ -7278,6 +7283,11 @@ def process():
             "news": [{"title": "Error fetching data", "source": {"name": "Trading System"}, "summary": "We encountered an error while analyzing this symbol. Please try again later."}],
             "isCrypto": is_crypto_symbol(symbol)
         })
+        
+        # Add CORS headers to error response
+        response_obj.headers['Access-Control-Allow-Origin'] = '*'
+        response_obj.headers['Access-Control-Allow-Methods'] = 'GET, POST, OPTIONS'
+        response_obj.headers['Access-Control-Allow-Headers'] = 'Content-Type, Authorization'
         
         return response_obj, 200  # Return 200 even on error to prevent frontend crashes
 
