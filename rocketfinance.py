@@ -6454,46 +6454,129 @@ def get_options_api():
         # - Polygon.io
         # - IEX Cloud
         
+        # Get current price from recent data if available
+        current_price = 150.25  # Default price
+        try:
+            # Try to get recent price data for the symbol
+            import yfinance as yf
+            ticker = yf.Ticker(symbol)
+            hist = ticker.history(period="1d")
+            if not hist.empty:
+                current_price = float(hist['Close'].iloc[-1])
+                print(f"Using current price for {symbol}: ${current_price:.2f}")
+        except Exception as e:
+            print(f"Could not fetch current price for {symbol}, using default: {e}")
+        
+        # Generate realistic options data based on current price
+        import random
+        from datetime import datetime, timedelta
+        
+        # Generate expiration dates (next 4 Fridays)
+        today = datetime.now()
+        expirations = []
+        for i in range(1, 5):  # Next 4 weeks
+            # Find next Friday
+            days_ahead = 4 - today.weekday()  # Friday is 4
+            if days_ahead <= 0:  # Target day already happened this week
+                days_ahead += 7
+            days_ahead += (i-1) * 7  # Add weeks
+            exp_date = today + timedelta(days=days_ahead)
+            expirations.append({
+                "date": exp_date.strftime("%Y-%m-%d"),
+                "daysToExpiration": days_ahead
+            })
+        
+        # Generate strike prices around current price
+        strikes = []
+        for i in range(-10, 11, 2):  # 10 strikes below, current, 10 above
+            strike = round(current_price + (i * current_price * 0.02), 2)  # 2% intervals
+            if strike > 0:
+                strikes.append(strike)
+        
+        # Generate options chains for each expiration
+        chains = []
+        for exp in expirations:
+            chain_strikes = []
+            for strike in strikes:
+                # Calculate realistic option prices using Black-Scholes approximation
+                time_to_exp = exp["daysToExpiration"] / 365.0
+                moneyness = current_price / strike
+                
+                # Simplified option pricing (not true Black-Scholes, but realistic)
+                if time_to_exp > 0:
+                    call_price = max(0.01, current_price - strike + (current_price * 0.02 * time_to_exp))
+                    put_price = max(0.01, strike - current_price + (current_price * 0.02 * time_to_exp))
+                else:
+                    call_price = max(0.01, current_price - strike)
+                    put_price = max(0.01, strike - current_price)
+                
+                # Add some randomness to make it realistic
+                call_price *= random.uniform(0.95, 1.05)
+                put_price *= random.uniform(0.95, 1.05)
+                
+                # Generate bid/ask spreads
+                call_spread = call_price * 0.02  # 2% spread
+                put_spread = put_price * 0.02
+                
+                call_bid = max(0.01, call_price - call_spread/2)
+                call_ask = call_price + call_spread/2
+                put_bid = max(0.01, put_price - put_spread/2)
+                put_ask = put_price + put_spread/2
+                
+                # Generate realistic volume and open interest
+                call_volume = random.randint(10, 500)
+                put_volume = random.randint(10, 500)
+                call_oi = random.randint(100, 5000)
+                put_oi = random.randint(100, 5000)
+                
+                chain_strikes.append({
+                    "strikePrice": strike,
+                    "call": {
+                        "lastPrice": round(call_price, 2),
+                        "bid": round(call_bid, 2),
+                        "ask": round(call_ask, 2),
+                        "volume": call_volume,
+                        "openInterest": call_oi
+                    },
+                    "put": {
+                        "lastPrice": round(put_price, 2),
+                        "bid": round(put_bid, 2),
+                        "ask": round(put_ask, 2),
+                        "volume": put_volume,
+                        "openInterest": put_oi
+                    }
+                })
+            
+            chains.append({
+                "expiration": exp["date"],
+                "strikes": chain_strikes
+            })
+        
         # Mock options data structure
         mock_options = {
             "symbol": symbol,
-            "underlyingPrice": 150.25,
+            "underlyingPrice": round(current_price, 2),
             "options": {
-                "expirations": [
-                    {"date": "2024-02-16", "daysToExpiration": 7},
-                    {"date": "2024-02-23", "daysToExpiration": 14},
-                    {"date": "2024-03-01", "daysToExpiration": 21},
-                    {"date": "2024-03-15", "daysToExpiration": 35}
-                ],
-                "chains": [
-                    {
-                        "expiration": "2024-02-16",
-                        "strikes": [
-                            {
-                                "strikePrice": 145,
-                                "call": {"lastPrice": 6.50, "bid": 6.25, "ask": 6.75, "volume": 245, "openInterest": 1200},
-                                "put": {"lastPrice": 1.25, "bid": 1.20, "ask": 1.30, "volume": 89, "openInterest": 890}
-                            },
-                            {
-                                "strikePrice": 150,
-                                "call": {"lastPrice": 3.75, "bid": 3.50, "ask": 3.85, "volume": 567, "openInterest": 2100},
-                                "put": {"lastPrice": 3.50, "bid": 3.40, "ask": 3.60, "volume": 234, "openInterest": 1450}
-                            },
-                            {
-                                "strikePrice": 155,
-                                "call": {"lastPrice": 1.85, "bid": 1.75, "ask": 1.95, "volume": 123, "openInterest": 890},
-                                "put": {"lastPrice": 6.75, "bid": 6.50, "ask": 7.00, "volume": 78, "openInterest": 650}
-                            }
-                        ]
-                    }
-                ]
+                "expirations": expirations,
+                "chains": chains
             }
         }
         
-        return jsonify(mock_options)
+        response = jsonify(mock_options)
+        
+        # Add CORS headers
+        response.headers['Access-Control-Allow-Origin'] = '*'
+        response.headers['Access-Control-Allow-Methods'] = 'GET, POST, OPTIONS'
+        response.headers['Access-Control-Allow-Headers'] = 'Content-Type, Authorization'
+        
+        return response
         
     except Exception as e:
-        return jsonify({"error": f"Failed to fetch options data: {str(e)}"}), 500
+        response = jsonify({"error": f"Failed to fetch options data: {str(e)}"})
+        response.headers['Access-Control-Allow-Origin'] = '*'
+        response.headers['Access-Control-Allow-Methods'] = 'GET, POST, OPTIONS'
+        response.headers['Access-Control-Allow-Headers'] = 'Content-Type, Authorization'
+        return response, 500
 
 # ---------------------------
 # Track Performance Endpoint
