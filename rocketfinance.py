@@ -6569,7 +6569,8 @@ def get_options_api():
             "underlyingPrice": round(current_price, 2),
             "dataSource": "calculated",  # Indicates this is calculated data, not live market data
             "lastUpdated": datetime.now().isoformat(),
-            "note": "This is calculated options data, not live market data",
+            "note": "This is calculated options data for demonstration purposes only. Not suitable for live trading decisions.",
+            "warning": "Live market data required for production use",
             "options": {
                 "expirations": expirations,
                 "chains": chains
