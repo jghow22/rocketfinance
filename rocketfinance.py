@@ -6442,7 +6442,18 @@ def get_forecasts_api():
 def get_options_api():
     """
     Get options chain data for a symbol.
-    This is a placeholder endpoint - in production, you would integrate with a real options data provider.
+    
+    IMPORTANT: This endpoint currently returns CALCULATED data, not live market data.
+    The frontend is configured to reject calculated data and only accept live market data.
+    
+    To enable real options data, integrate with a live options data provider such as:
+    - TD Ameritrade API
+    - Interactive Brokers API  
+    - Polygon.io
+    - IEX Cloud
+    - Alpha Vantage
+    
+    Once integrated, set dataSource to "live_market" to enable options display.
     """
     try:
         symbol = request.args.get("symbol", "AAPL").upper()
@@ -6552,17 +6563,20 @@ def get_options_api():
                 "strikes": chain_strikes
             })
         
-        # Mock options data structure
-        mock_options = {
+        # Options data structure (calculated data - not live market data)
+        options_response = {
             "symbol": symbol,
             "underlyingPrice": round(current_price, 2),
+            "dataSource": "calculated",  # Indicates this is calculated data, not live market data
+            "lastUpdated": datetime.now().isoformat(),
+            "note": "This is calculated options data, not live market data",
             "options": {
                 "expirations": expirations,
                 "chains": chains
             }
         }
         
-        response = jsonify(mock_options)
+        response = jsonify(options_response)
         
         # Add CORS headers
         response.headers['Access-Control-Allow-Origin'] = '*'
