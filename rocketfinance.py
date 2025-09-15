@@ -6563,14 +6563,13 @@ def get_options_api():
                 "strikes": chain_strikes
             })
         
-        # Options data structure (calculated data - not live market data)
+        # Options data structure (calculated data for demonstration)
         options_response = {
             "symbol": symbol,
             "underlyingPrice": round(current_price, 2),
-            "dataSource": "calculated",  # Indicates this is calculated data, not live market data
+            "dataSource": "calculated",  # Indicates this is calculated data
             "lastUpdated": datetime.now().isoformat(),
-            "note": "This is calculated options data for demonstration purposes only. Not suitable for live trading decisions.",
-            "warning": "Live market data required for production use",
+            "note": "Calculated options data for demonstration purposes",
             "options": {
                 "expirations": expirations,
                 "chains": chains
