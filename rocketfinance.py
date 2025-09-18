@@ -4276,11 +4276,18 @@ def generate_live_trading_signals(data, timeframe):
                     signal_strength = "weak"
                     confidence = min(0.5, sell_score / max_possible_score)
             
-            # Only add signals with sufficient confidence and avoid signal clustering
+            # Only add signals with sufficient confidence and implement signal toggle mechanism
             if signal_type != "hold" and confidence >= 0.2:  # Very reduced confidence threshold
-                # Check if we already have a recent signal of the same type
-                recent_same_signals = [s for s in signals[-5:] if s['type'] == signal_type]  # Increased clustering check
-                if len(recent_same_signals) < 3:  # Increased limit for consecutive signals
+                # Implement signal toggle mechanism - only allow alternating signals
+                should_add_signal = True
+                if len(signals) > 0:
+                    last_signal = signals[-1]
+                    # Only add signal if it's different from the last signal type
+                    if last_signal['type'] == signal_type:
+                        should_add_signal = False
+                        print(f"Skipping duplicate {signal_type} signal - last signal was also {signal_type}")
+                
+                if should_add_signal:
                     signal_data = {
                         "date": current_date.strftime("%Y-%m-%dT%H:%M:%SZ"),
                         "price": float(current_price),
@@ -4401,60 +4408,80 @@ def generate_live_trading_signals(data, timeframe):
                 
                 print(f"Signal type: {signal_type}, Strength: {strength}, Confidence: {confidence:.2f}")
                 
-                # Only generate signals if we have a clear direction
+                # Only generate signals if we have a clear direction and implement toggle mechanism
                 if signal_type != "hold":
-                    enhanced_signal = {
-                        "date": datetime.now().strftime("%Y-%m-%dT%H:%M:%SZ"),
-                        "price": float(current_price),
-                        "type": signal_type,
-                        "strength": strength,
-                        "confidence": round(confidence, 2),
-                        "score": abs(signal_score),
-                        "indicators": {
-                            "rsi": float(data['RSI'].iloc[-1]) if 'RSI' in data.columns and not pd.isna(data['RSI'].iloc[-1]) else None,
-                            "macd": float(data['MACD'].iloc[-1]) if 'MACD' in data.columns and not pd.isna(data['MACD'].iloc[-1]) else None,
-                            "sma_20": float(data['SMA_20'].iloc[-1]) if 'SMA_20' in data.columns and not pd.isna(data['SMA_20'].iloc[-1]) else None,
-                            "signal_score": signal_score,
-                            "enhanced": True
+                    # Check if we should add this signal (toggle mechanism)
+                    should_add_enhanced_signal = True
+                    if len(signals) > 0:
+                        last_signal = signals[-1]
+                        if last_signal['type'] == signal_type:
+                            should_add_enhanced_signal = False
+                            print(f"Skipping duplicate enhanced {signal_type} signal - last signal was also {signal_type}")
+                    
+                    if should_add_enhanced_signal:
+                        enhanced_signal = {
+                            "date": datetime.now().strftime("%Y-%m-%dT%H:%M:%SZ"),
+                            "price": float(current_price),
+                            "type": signal_type,
+                            "strength": strength,
+                            "confidence": round(confidence, 2),
+                            "score": abs(signal_score),
+                            "indicators": {
+                                "rsi": float(data['RSI'].iloc[-1]) if 'RSI' in data.columns and not pd.isna(data['RSI'].iloc[-1]) else None,
+                                "macd": float(data['MACD'].iloc[-1]) if 'MACD' in data.columns and not pd.isna(data['MACD'].iloc[-1]) else None,
+                                "sma_20": float(data['SMA_20'].iloc[-1]) if 'SMA_20' in data.columns and not pd.isna(data['SMA_20'].iloc[-1]) else None,
+                                "signal_score": signal_score,
+                                "enhanced": True
+                            }
                         }
-                    }
-                    signals.append(enhanced_signal)
-                    print(f"Enhanced {signal_type.upper()} signal generated (score: {signal_score}, confidence: {confidence:.2f})")
+                        signals.append(enhanced_signal)
+                        print(f"Enhanced {signal_type.upper()} signal generated (score: {signal_score}, confidence: {confidence:.2f})")
                 else:
                     print(f"No clear signal direction (score: {signal_score})")
                     
-                    # Generate a simple signal for testing
+                    # Generate a simple signal for testing with toggle mechanism
                     print("Generating simple test signal...")
-                    if current_price > data['Close'].iloc[-2]:  # Price went up
-                        test_signal = {
-                            "date": datetime.now().strftime("%Y-%m-%dT%H:%M:%SZ"),
-                            "price": float(current_price),
-                            "type": "buy",
-                            "strength": "weak",
-                            "confidence": 0.4,
-                            "score": 25,
-                            "indicators": {
-                                "price_change": "positive",
-                                "test_signal": True
+                    test_signal_type = "buy" if current_price > data['Close'].iloc[-2] else "sell"
+                    
+                    # Apply toggle mechanism to test signals too
+                    should_add_test_signal = True
+                    if len(signals) > 0:
+                        last_signal = signals[-1]
+                        if last_signal['type'] == test_signal_type:
+                            should_add_test_signal = False
+                            print(f"Skipping duplicate test {test_signal_type} signal - last signal was also {test_signal_type}")
+                    
+                    if should_add_test_signal:
+                        if test_signal_type == "buy":
+                            test_signal = {
+                                "date": datetime.now().strftime("%Y-%m-%dT%H:%M:%SZ"),
+                                "price": float(current_price),
+                                "type": "buy",
+                                "strength": "weak",
+                                "confidence": 0.4,
+                                "score": 25,
+                                "indicators": {
+                                    "price_change": "positive",
+                                    "test_signal": True
+                                }
                             }
-                        }
-                        signals.append(test_signal)
-                        print("Test BUY signal generated")
-                    else:  # Price went down
-                        test_signal = {
-                            "date": datetime.now().strftime("%Y-%m-%dT%H:%M:%SZ"),
-                            "price": float(current_price),
-                            "type": "sell",
-                            "strength": "weak",
-                            "confidence": 0.4,
-                            "score": 25,
-                            "indicators": {
-                                "price_change": "negative",
-                                "test_signal": True
+                            signals.append(test_signal)
+                            print("Test BUY signal generated")
+                        else:  # Price went down
+                            test_signal = {
+                                "date": datetime.now().strftime("%Y-%m-%dT%H:%M:%SZ"),
+                                "price": float(current_price),
+                                "type": "sell",
+                                "strength": "weak",
+                                "confidence": 0.4,
+                                "score": 25,
+                                "indicators": {
+                                    "price_change": "negative",
+                                    "test_signal": True
+                                }
                             }
-                        }
-                        signals.append(test_signal)
-                        print("Test SELL signal generated")
+                            signals.append(test_signal)
+                            print("Test SELL signal generated")
                     
             except Exception as e:
                 print(f"Error in enhanced signal generation: {e}")
@@ -4528,24 +4555,46 @@ def generate_live_trading_signals(data, timeframe):
                 else:
                     continue  # No signal for this point
                 
-                # Create historical signal
-                historical_signal = {
-                    "date": current_row.name.strftime("%Y-%m-%dT%H:%M:%SZ"),
-                    "price": float(current_row['Close']),
-                    "type": signal_type,
-                    "strength": strength,
-                    "confidence": min(abs(score) / 8, 0.9),
-                    "score": abs(score),
-                    "indicators": indicators
-                }
-                historical_signals.append(historical_signal)
-                print(f"Generated historical {signal_type} signal at {historical_signal['date']} with score {score}")
+                # Create historical signal with toggle mechanism
+                should_add_historical_signal = True
+                if len(historical_signals) > 0:
+                    last_historical_signal = historical_signals[-1]
+                    if last_historical_signal['type'] == signal_type:
+                        should_add_historical_signal = False
+                        print(f"Skipping duplicate historical {signal_type} signal - last signal was also {signal_type}")
+                
+                if should_add_historical_signal:
+                    historical_signal = {
+                        "date": current_row.name.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                        "price": float(current_row['Close']),
+                        "type": signal_type,
+                        "strength": strength,
+                        "confidence": min(abs(score) / 8, 0.9),
+                        "score": abs(score),
+                        "indicators": indicators
+                    }
+                    historical_signals.append(historical_signal)
+                    print(f"Generated historical {signal_type} signal at {historical_signal['date']} with score {score}")
         
         print(f"Generated {len(historical_signals)} historical signals")
         
-        # Combine current and historical signals
-        all_signals = signals + historical_signals
-        print(f"Total signals: {len(all_signals)} (current: {len(signals)}, historical: {len(historical_signals)})")
+        # Combine current and historical signals with final toggle mechanism
+        all_signals = []
+        combined_signals = signals + historical_signals
+        
+        # Apply toggle mechanism across all combined signals
+        for signal in combined_signals:
+            should_add_final_signal = True
+            if len(all_signals) > 0:
+                last_signal = all_signals[-1]
+                if last_signal['type'] == signal['type']:
+                    should_add_final_signal = False
+                    print(f"Skipping duplicate {signal['type']} signal in final combination")
+            
+            if should_add_final_signal:
+                all_signals.append(signal)
+        
+        print(f"Total signals after toggle filter: {len(all_signals)} (original: {len(combined_signals)})")
         
         # Debug: Show sample of historical signals
         if len(historical_signals) > 0:
